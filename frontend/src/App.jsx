@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import './App.css';
+import { useState, useEffect, useRef } from "react";
+import "./App.css";
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -7,10 +7,10 @@ function App() {
 
   useEffect(() => {
     // Connect to the FastAPI WebSocket
-    ws.current = new WebSocket('ws://localhost:8000/ws');
+    ws.current = new WebSocket("ws://localhost:8000/ws");
 
-    ws.current.onopen = () => console.log('Connected to Python Backend');
-    
+    ws.current.onopen = () => console.log("Connected to Python Backend");
+
     ws.current.onmessage = (event) => {
       // Listen for data from the backend (like YOLO coordinates or Pi stats)
       setMessages((prev) => [...prev, event.data]);
@@ -23,21 +23,24 @@ function App() {
 
   const sendCommand = () => {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      ws.current.send('MOVE_FORWARD');
+      ws.current.send("MOVE_FORWARD");
     }
   };
 
   return (
-    <div style={{ padding: '2rem' }}>
+    <div style={{ padding: "2rem" }}>
       <h1>Robotics Dashboard</h1>
-      
-      <button onClick={sendCommand} style={{ padding: '10px', fontSize: '16px' }}>
+
+      <button
+        onClick={sendCommand}
+        style={{ padding: "10px", fontSize: "16px" }}
+      >
         Send "Move Forward" Command
       </button>
 
-      <div style={{ marginTop: '20px', textAlign: 'left' }}>
+      <div style={{ marginTop: "20px", textAlign: "left" }}>
         <h3>Telemetry from Backend:</h3>
-        <pre style={{ background: '#f4f4f4', padding: '10px', color: '#333' }}>
+        <pre style={{ background: "#f4f4f4", padding: "10px", color: "#333" }}>
           {messages.map((msg, index) => (
             <div key={index}>{msg}</div>
           ))}
