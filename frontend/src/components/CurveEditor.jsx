@@ -102,8 +102,11 @@ function TrackSVG({
 
   // ── Mouse handlers ────────────────────────────────────────────────
 
-  const handleMouseDown = (e) => {
+  const handlePointerDown = (e) => {
     if (isLocked || e.button !== 0) return;
+    try {
+      e.target.setPointerCapture(e.pointerId);
+    } catch (err) {}
     const { x, y } = svgCoords(e);
     const idx = hitTest(x, y);
 
@@ -140,7 +143,7 @@ function TrackSVG({
     }
   };
 
-  const handleMouseMove = (e) => {
+  const handlePointerMove = (e) => {
     if (dragRef.current) {
       // ── Waypoint drag ──
       const { x, y } = svgCoords(e);
@@ -226,7 +229,11 @@ function TrackSVG({
     }
   };
 
-  const handleMouseUp = (e) => {
+  const handlePointerUp = (e) => {
+    try {
+      e.target.releasePointerCapture(e.pointerId);
+    } catch (err) {}
+
     if (dragRef.current) {
       if (
         !dragRef.current.hasDragged &&
@@ -261,8 +268,11 @@ function TrackSVG({
     }
   };
 
-  const handleMouseLeave = () => {
-    // Cancel both drag and marquee if the mouse leaves the SVG.
+  const handlePointerCancel = (e) => {
+    try {
+      e.target.releasePointerCapture(e.pointerId);
+    } catch (err) {}
+
     dragRef.current = null;
     setIsDragging(false);
     if (marquee) setMarquee(null);
@@ -309,10 +319,10 @@ function TrackSVG({
         pointerEvents: isLocked ? "none" : "all",
         cursor: isDragging ? "grabbing" : "crosshair",
       }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseLeave}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
     >
