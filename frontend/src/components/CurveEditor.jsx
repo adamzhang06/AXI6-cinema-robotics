@@ -7,17 +7,21 @@ const CANVAS_WIDTH = 6000;
 const DIAMOND_R = 5;
 
 const TRACKS = [
-  { id: "slide", name: "Slide", color: "#3993DD", limit: 100, unit: "cm" },
-  { id: "pan", name: "Pan", color: "#ff4444", limit: 360, unit: "°" },
-  { id: "tilt", name: "Tilt", color: "#44ff44", limit: 70, unit: "°" },
+  { id: "slide", name: "Slide", color: "#3993DD", max: 28, min: 0, unit: "in" },
+  { id: "pan", name: "Pan", color: "#ff4444", max: 360, min: -360, unit: "°" },
+  { id: "tilt", name: "Tilt", color: "#44ff44", max: 45, min: -45, unit: "°" },
 ];
 
 const frameToX = (frame) => (frame / MAX_FRAME) * CANVAS_WIDTH;
 
-function makeDefaultWaypoints(laneHeight) {
+function makeDefaultWaypoints(track, laneHeight) {
+  const range = track.max - track.min;
+  const zeroRatio = track.max / range;
+  const zeroY = zeroRatio * laneHeight;
+
   return [
-    { frame: 0, y: laneHeight / 2, handleIn: null, handleOut: null },
-    { frame: MAX_FRAME, y: laneHeight / 2, handleIn: null, handleOut: null },
+    { frame: 0, y: zeroY, handleIn: null, handleOut: null },
+    { frame: MAX_FRAME, y: zeroY, handleIn: null, handleOut: null },
   ];
 }
 
@@ -57,8 +61,10 @@ function buildPathD(waypoints) {
 }
 
 function TrackSVG({ track, waypoints, laneHeight }) {
-  const { color, limit, unit } = track;
-  const centerY = laneHeight / 2;
+  const { color, max, min, unit } = track;
+  const range = max - min;
+  const zeroRatio = max / range;
+  const zeroY = zeroRatio * laneHeight;
   const pathD = buildPathD(waypoints);
 
   return (
@@ -71,9 +77,9 @@ function TrackSVG({ track, waypoints, laneHeight }) {
       {/* Zero / centre line */}
       <line
         x1={0}
-        y1={centerY}
+        y1={zeroY}
         x2={CANVAS_WIDTH}
-        y2={centerY}
+        y2={zeroY}
         stroke="rgba(255,255,255,0.12)"
         strokeWidth={1}
         strokeDasharray="4 4"
@@ -88,8 +94,7 @@ function TrackSVG({ track, waypoints, laneHeight }) {
         fontWeight="700"
         letterSpacing="0.05em"
       >
-        +{limit}
-        {unit}
+        {max > 0 && min < 0 ? `+${max}` : max}{unit}
       </text>
       <text
         x={6}
@@ -99,8 +104,7 @@ function TrackSVG({ track, waypoints, laneHeight }) {
         fontWeight="700"
         letterSpacing="0.05em"
       >
-        -{limit}
-        {unit}
+        {min}{unit}
       </text>
 
       {/* Curve path */}
@@ -143,7 +147,7 @@ export default function CurveEditor() {
 
   const [laneHeights, setLaneHeights] = useState([100, 100, 100]);
   const [trackData, setTrackData] = useState(() =>
-    Object.fromEntries(TRACKS.map((t) => [t.id, makeDefaultWaypoints(100)])),
+    Object.fromEntries(TRACKS.map((t) => [t.id, makeDefaultWaypoints(t, 100)])),
   );
 
   useEffect(() => {
@@ -151,7 +155,7 @@ export default function CurveEditor() {
     setLaneHeights(heights);
     setTrackData(
       Object.fromEntries(
-        TRACKS.map((t, i) => [t.id, makeDefaultWaypoints(heights[i])]),
+        TRACKS.map((t, i) => [t.id, makeDefaultWaypoints(t, heights[i])]),
       ),
     );
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
