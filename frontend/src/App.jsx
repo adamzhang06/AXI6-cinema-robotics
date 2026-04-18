@@ -35,9 +35,13 @@ function tcToSecs(tc, fps = CINEMATIC_FPS) {
 // ─────────────────────────────────────────────────────────────────
 
 /** Icon button used in the playback bar. */
-function PlaybackBtn({ title, className = "", children }) {
+function PlaybackBtn({ title, className = "", onClick, active = false, children }) {
   return (
-    <button className={`playback-btn ${className}`} title={title}>
+    <button
+      className={`playback-btn ${active ? "!bg-white/15 !text-white" : ""} ${className}`}
+      title={title}
+      onClick={onClick}
+    >
       {children}
     </button>
   );
@@ -429,6 +433,7 @@ function Timeline() {
   const [durationS,    setDurationS]    = useState(FALLBACK_DURATION_S);
   const [durationInput, setDurationInput] = useState(`${FALLBACK_DURATION_S}s`);
   const [currentFrame, setCurrentFrame] = useState(0);
+  const [isPlaying, setIsPlaying] = useState("paused"); // 'forward' | 'reverse' | 'paused'
 
   const viewportRef = useRef(null);
   const [viewportWidth, setViewportWidth] = useState(1000); // fallback
@@ -458,11 +463,91 @@ function Timeline() {
 
   const canvasRef    = useRef(null); // the scrollable canvas div
   const isScrubbing  = useRef(false);
+  const rafRef       = useRef(null);
+  const lastTimeRef  = useRef(null);
+  const scrubMouseX  = useRef(null);
+  const scrubRaf     = useRef(null);
+
+  const startAutoScroll = () => {
+    if (scrubRaf.current) return;
+    const loop = () => {
+      if (!isScrubbing.current || scrubMouseX.current === null) {
+        scrubRaf.current = null;
+        return;
+      }
+      if (viewportRef.current && canvasRef.current) {
+        const rect = viewportRef.current.getBoundingClientRect();
+        const EDGE = 100;
+        let scrolled = false;
+        let speed = 0;
+        
+        if (scrubMouseX.current < rect.left + EDGE) {
+          const intensity = 1 - Math.max(0, scrubMouseX.current - rect.left) / EDGE;
+          speed = -15 - intensity * 25;
+          viewportRef.current.scrollLeft += speed;
+          scrolled = true;
+        } else if (scrubMouseX.current > rect.right - EDGE) {
+          const intensity = 1 - Math.max(0, rect.right - scrubMouseX.current) / EDGE;
+          speed = 15 + intensity * 25;
+          viewportRef.current.scrollLeft += speed;
+          scrolled = true;
+        }
+        
+        if (scrolled) {
+          const x = scrubMouseX.current - canvasRef.current.getBoundingClientRect().left;
+          setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))));
+        }
+      }
+      scrubRaf.current = requestAnimationFrame(loop);
+    };
+    scrubRaf.current = requestAnimationFrame(loop);
+  };
 
   // Clamp scrubber when duration shrinks.
   useEffect(() => {
     setCurrentFrame((prev) => Math.min(prev, maxFrame));
   }, [maxFrame]);
+
+  // 24fps playback loop.
+  useEffect(() => {
+    if (isPlaying === "paused") {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      lastTimeRef.current = null;
+      return;
+    }
+    const frameMs = 1000 / CINEMATIC_FPS;
+    const dir = isPlaying === "forward" ? 1 : -1;
+    const tick = (ts) => {
+      if (lastTimeRef.current === null) lastTimeRef.current = ts;
+      const elapsed = ts - lastTimeRef.current;
+      if (elapsed >= frameMs) {
+        const steps = Math.floor(elapsed / frameMs);
+        lastTimeRef.current += steps * frameMs;
+        setCurrentFrame((prev) => Math.max(0, Math.min(maxFrame, prev + dir * steps)));
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [isPlaying, maxFrame]);
+
+  // Pause automatically when playhead hits a boundary.
+  useEffect(() => {
+    if (isPlaying === "forward" && currentFrame >= maxFrame) setIsPlaying("paused");
+    if (isPlaying === "reverse" && currentFrame <= 0) setIsPlaying("paused");
+  }, [currentFrame, isPlaying, maxFrame]);
+
+  // Auto-scroll to keep playhead visible during playback.
+  useEffect(() => {
+    if (isPlaying === "paused" || !viewportRef.current) return;
+    const x = (currentFrame / maxFrame) * canvasWidth;
+    const { scrollLeft, clientWidth } = viewportRef.current;
+    if (x > scrollLeft + clientWidth - 80) {
+      viewportRef.current.scrollLeft = x - clientWidth * 0.3;
+    } else if (x < scrollLeft + 80) {
+      viewportRef.current.scrollLeft = Math.max(0, x - clientWidth * 0.7);
+    }
+  }, [currentFrame, isPlaying, maxFrame, canvasWidth]);
 
   const commitDuration = () => {
     const rawDigits = durationInput.replace(/\D/g, "");
@@ -482,6 +567,9 @@ function Timeline() {
     e.stopPropagation();
     try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
     isScrubbing.current = true;
+    scrubMouseX.current = e.clientX;
+    startAutoScroll();
+
     if (canvasRef.current) {
       const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
       setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))));
@@ -489,12 +577,19 @@ function Timeline() {
   };
   const handleScrubMove = (e) => {
     if (!isScrubbing.current || !canvasRef.current) return;
+    scrubMouseX.current = e.clientX;
+    
     const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
     setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))));
   };
   const handleScrubUp = (e) => {
     try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
     isScrubbing.current = false;
+    scrubMouseX.current = null;
+    if (scrubRaf.current) {
+      cancelAnimationFrame(scrubRaf.current);
+      scrubRaf.current = null;
+    }
   };
 
   return (
@@ -579,32 +674,40 @@ function Timeline() {
             <BarDivider />
 
             {/* Skip left */}
-            <PlaybackBtn title="Skip to start">
+            <PlaybackBtn title="Skip to start" onClick={() => { 
+              setCurrentFrame(0); 
+              setIsPlaying("paused"); 
+              if (viewportRef.current) viewportRef.current.scrollLeft = 0;
+            }}>
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M18 5.5v13L8 12l10-6.5z" />
                 <path d="M6 5.5h2v13H6v-13z" />
               </svg>
             </PlaybackBtn>
             {/* Play left */}
-            <PlaybackBtn title="Play backward">
+            <PlaybackBtn title="Play backward" active={isPlaying === "reverse"} onClick={() => setIsPlaying("reverse")}>
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M18 5.5v13L8 12l10-6.5z" />
               </svg>
             </PlaybackBtn>
             {/* Pause */}
-            <PlaybackBtn title="Pause">
+            <PlaybackBtn title="Pause" active={isPlaying === "paused"} onClick={() => setIsPlaying("paused")}>
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 5.5h4v13H6v-13zm8 0h4v13h-4v-13z" />
               </svg>
             </PlaybackBtn>
             {/* Play right */}
-            <PlaybackBtn title="Play forward">
+            <PlaybackBtn title="Play forward" active={isPlaying === "forward"} onClick={() => setIsPlaying("forward")}>
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 5.5v13L16 12 6 5.5z" />
               </svg>
             </PlaybackBtn>
             {/* Skip right */}
-            <PlaybackBtn title="Skip to end">
+            <PlaybackBtn title="Skip to end" onClick={() => { 
+              setCurrentFrame(maxFrame); 
+              setIsPlaying("paused"); 
+              if (viewportRef.current) viewportRef.current.scrollLeft = viewportRef.current.scrollWidth;
+            }}>
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 5.5v13L16 12 6 5.5z" />
                 <path d="M16 5.5h2v13h-2v-13z" />
