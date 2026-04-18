@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import "./index.css";
 import CurveEditor, { TimelineRuler } from "./components/CurveEditor";
+import { TRACKS } from "./constants/tracks";
 import { useAXI6Socket } from "./hooks/useAXI6Socket";
+import { bakeTrajectory } from "./utils/trajectoryBaker";
 
 // ─────────────────────────────────────────────────────────────────
 // TIMECODE HELPERS
@@ -457,12 +459,30 @@ function Timeline({
   setActiveTrack,
   curveEditorRef,
   onWaypointsChange,
+  waypointsByTrack,
   sendMessage,
 }) {
   const tracks = TRACKS_INFO;
 
   const [lockedTracks, setLockedTracks] = useState(new Set());
   const [hiddenTracks, setHiddenTracks] = useState(new Set());
+  const [hasSelection, setHasSelection] = useState(false);
+  const [isShiftDown, setIsShiftDown] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Shift") setIsShiftDown(true);
+    };
+    const handleKeyUp = (e) => {
+      if (e.key === "Shift") setIsShiftDown(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, []);
 
   const toggle = (setter, id) =>
     setter((prev) => {
@@ -589,9 +609,7 @@ function Timeline({
 
   // Pause automatically when playhead hits a boundary.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (isPlaying === "forward" && currentFrame >= maxFrame)
-      setIsPlaying("paused");
+    if (isPlaying === "forward" && currentFrame >= maxFrame) setIsPlaying("paused"); // eslint-disable-line react-hooks/set-state-in-effect
     if (isPlaying === "reverse" && currentFrame <= 0) setIsPlaying("paused");
   }, [currentFrame, isPlaying, maxFrame]);
 
@@ -684,12 +702,16 @@ function Timeline({
   const [saveStatus, setSaveStatus] = useState("unsaved"); // 'unsaved' | 'saved' | 'error'
 
   const handleSave = () => {
-    const success = sendMessage({ sender: "ui", command: "save_trajectory", test: true });
-    if (success) {
-      setSaveStatus("saved");
-    } else {
-      setSaveStatus("error");
-    }
+    const laneHeight = curveEditorRef.current?.getLaneHeight() ?? 100;
+    const bakedData  = bakeTrajectory(waypointsByTrack, durationS, TRACKS, CINEMATIC_FPS, laneHeight, hiddenTracks);
+    const success = sendMessage({
+      sender: "ui",
+      command: "save_trajectory",
+      fps: CINEMATIC_FPS,
+      duration: durationS,
+      tracks: bakedData,
+    });
+    setSaveStatus(success ? "saved" : "error");
   };
 
   const handleExecute = () => {
@@ -974,30 +996,42 @@ function Timeline({
                     </>
                   ),
                 },
-              ].map(({ title, type, icon }) => (
-                <button
-                  key={title}
-                  title={title}
-                  onClick={(e) =>
-                    curveEditorRef.current?.applyEasing(type, e.shiftKey)
-                  }
-                  className="w-7 h-7 flex items-center justify-center rounded border border-white/20
-                             bg-neutral-900 hover:bg-white/10 text-white transition-colors"
-                >
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+              ].map(({ title, type, icon }) => {
+                const activeColor = TRACKS_INFO.find(t => t.id === activeTrack)?.color || "#ffffff";
+                const isHighlight = isShiftDown && activeTrack;
+                
+                return (
+                  <button
+                    key={title}
+                    title={title}
+                    onClick={(e) => {
+                      if (!e.shiftKey && !hasSelection) return;
+                      curveEditorRef.current?.applyEasing(type, e.shiftKey, activeTrack);
+                    }}
+                    style={isHighlight ? { borderColor: activeColor, boxShadow: `0 0 8px ${activeColor}40`, color: activeColor } : {}}
+                    className={`w-7 h-7 flex items-center justify-center rounded border transition-all duration-200 ${
+                      isHighlight
+                        ? "bg-neutral-900 cursor-pointer"
+                        : !hasSelection
+                          ? "border-white/5 bg-neutral-900/50 text-white/30 cursor-default"
+                          : "border-white/20 bg-neutral-900 hover:bg-white/10 text-white"
+                    }`}
                   >
-                    {icon}
-                  </svg>
-                </button>
-              ))}
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      {icon}
+                    </svg>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -1071,7 +1105,7 @@ function Timeline({
               isLocked={lockedTracks.has(t.id)}
               isHidden={hiddenTracks.has(t.id)}
               onToggleLock={() => toggle(setLockedTracks, t.id)}
-              onToggleHide={() => toggle(setHiddenTracks, t.id)}
+              onToggleHide={() => { toggle(setHiddenTracks, t.id); setSaveStatus("unsaved"); }}
             />
           ))}
         </div>
@@ -1122,6 +1156,7 @@ function Timeline({
                   setSaveStatus("unsaved");
                   onWaypointsChange?.(id, wps);
                 }}
+                onSelectionChange={setHasSelection}
                 lockedTracks={lockedTracks}
                 hiddenTracks={hiddenTracks}
               />
@@ -1388,6 +1423,7 @@ export default function App() {
             setActiveTrack={setActiveTrack}
             curveEditorRef={curveEditorRef}
             onWaypointsChange={handleWaypointsChange}
+            waypointsByTrack={waypointsByTrack}
             sendMessage={sendMessage}
           />
         </div>
