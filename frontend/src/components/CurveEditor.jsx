@@ -5,7 +5,8 @@ const DURATION_S = 120;
 const MAX_FRAME = FPS * DURATION_S; // 3600
 const CANVAS_WIDTH = 6000;
 const DIAMOND_R = 5;
-const HIT_R = DIAMOND_R + 4; // slightly larger pick radius
+const HIT_R = DIAMOND_R + 4;
+const MARQUEE_THRESHOLD = 4; // px before a click becomes a drag/marquee
 
 const TRACKS = [
   { id: "slide", name: "Slide", color: "#3993DD", max: 28,  min: 0,    unit: "in" },
@@ -27,16 +28,11 @@ function buildPathD(waypoints) {
   if (waypoints.length < 2) return "";
   const pxPerFrame = CANVAS_WIDTH / MAX_FRAME;
   const pts = waypoints.map((wp) => ({
-    x: frameToX(wp.frame),
-    y: wp.y,
-    hi: wp.handleIn,
-    ho: wp.handleOut,
+    x: frameToX(wp.frame), y: wp.y, hi: wp.handleIn, ho: wp.handleOut,
   }));
-
   let d = `M ${pts[0].x} ${pts[0].y}`;
   for (let i = 0; i < pts.length - 1; i++) {
-    const cur = pts[i];
-    const nxt = pts[i + 1];
+    const cur = pts[i], nxt = pts[i + 1];
     if (cur.ho || nxt.hi) {
       const cp1x = cur.ho ? cur.x + cur.ho.dFrame * pxPerFrame : cur.x;
       const cp1y = cur.ho ? cur.y + cur.ho.dY                  : cur.y;
@@ -52,90 +48,163 @@ function buildPathD(waypoints) {
 
 // ─── TrackSVG ────────────────────────────────────────────────────────────────
 
-function TrackSVG({ track, waypoints, laneHeight, onUpdateWaypoints }) {
-  const svgRef     = useRef(null);
-  const dragRef    = useRef(null); // { idx } | null
+function TrackSVG({
+  track,
+  waypoints,
+  laneHeight,
+  isLocked,
+  isHidden,
+  selectedWaypoints,    // Array<{ trackId, frame }> — pre-filtered to this track
+  onUpdateWaypoints,
+  onToggleWaypoint,     // ({ trackId, frame }) → void
+  onMarqueeSelect,      // (Array<{ trackId, frame }>, replace: boolean) → void
+  onClearSelection,     // () → void
+}) {
+  const svgRef          = useRef(null);
+  const dragRef         = useRef(null);         // { idx } | null
+  const marqueeStartRef = useRef(null);         // { x, y } | null — raw start coords
+
   const [isDragging, setIsDragging] = useState(false);
+  const [marquee,    setMarquee]    = useState(null); // { x0,y0,x1,y1 } | null
 
   const { color, max, min, unit } = track;
-  const zeroY = (max / (max - min)) * laneHeight;
-  const pathD = buildPathD(waypoints);
+  const zeroY  = (max / (max - min)) * laneHeight;
+  const pathD  = buildPathD(waypoints);
 
-  // Convert a mouse event to SVG-local coordinates (accounts for scroll offset).
+  // Derive display colours from lock/hidden state.
+  const pathColor = isHidden ? "rgba(100,100,100,0.3)" : color;
+  const wpColor   = isLocked ? "#888888" : pathColor;
+
+  const isWpSelected = (wp) =>
+    selectedWaypoints.some((s) => s.frame === wp.frame);
+
+  // ── Coordinate helpers ────────────────────────────────────────────
+
   const svgCoords = (e) => {
-    const rect = svgRef.current.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const r = svgRef.current.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
-  // Return the index of the waypoint under (svgX, svgY), or -1.
   const hitTest = (svgX, svgY) => {
     for (let i = 0; i < waypoints.length; i++) {
-      const wx = frameToX(waypoints[i].frame);
-      const wy = waypoints[i].y;
-      if (Math.abs(svgX - wx) <= HIT_R && Math.abs(svgY - wy) <= HIT_R) return i;
+      if (
+        Math.abs(svgX - frameToX(waypoints[i].frame)) <= HIT_R &&
+        Math.abs(svgY - waypoints[i].y)              <= HIT_R
+      ) return i;
     }
     return -1;
   };
 
-  // ── Event handlers ───────────────────────────────────────────────
+  // ── Mouse handlers ────────────────────────────────────────────────
 
   const handleMouseDown = (e) => {
-    if (e.button !== 0) return;
+    if (isLocked || e.button !== 0) return;
     const { x, y } = svgCoords(e);
     const idx = hitTest(x, y);
+
     if (idx !== -1) {
-      dragRef.current = { idx };
-      setIsDragging(true);
-      e.preventDefault(); // prevent text selection while dragging
+      if (e.shiftKey) {
+        // Shift+click toggles this waypoint in/out of selection.
+        onToggleWaypoint({ trackId: track.id, frame: waypoints[idx].frame });
+      } else {
+        // Normal click on waypoint → start drag.
+        dragRef.current = { idx };
+        setIsDragging(true);
+        e.preventDefault();
+      }
+    } else {
+      // Empty space → potential marquee.
+      marqueeStartRef.current = { x, y };
     }
   };
 
   const handleMouseMove = (e) => {
-    if (!dragRef.current) return;
+    if (dragRef.current) {
+      // ── Waypoint drag ──
+      const { x, y } = svgCoords(e);
+      const { idx }  = dragRef.current;
+      const wp       = waypoints[idx];
+      const isEndpt  = wp.frame === 0 || wp.frame === MAX_FRAME;
+
+      const rawFrame = Math.round((x / CANVAS_WIDTH) * MAX_FRAME);
+      const minF     = idx > 0                    ? waypoints[idx - 1].frame + 1 : 0;
+      const maxF     = idx < waypoints.length - 1 ? waypoints[idx + 1].frame - 1 : MAX_FRAME;
+      const newFrame = isEndpt ? wp.frame : Math.max(minF, Math.min(maxF, rawFrame));
+      const newY     = Math.max(0, Math.min(laneHeight, y));
+
+      onUpdateWaypoints(
+        waypoints.map((w, i) => (i === idx ? { ...w, frame: newFrame, y: newY } : w))
+      );
+    } else if (marqueeStartRef.current) {
+      // ── Marquee draw ──
+      const { x, y } = svgCoords(e);
+      const { x: x0, y: y0 } = marqueeStartRef.current;
+      if (Math.hypot(x - x0, y - y0) > MARQUEE_THRESHOLD) {
+        setMarquee({ x0, y0, x1: x, y1: y });
+      }
+    }
+  };
+
+  const handleMouseUp = (e) => {
+    if (dragRef.current) {
+      dragRef.current = null;
+      setIsDragging(false);
+    } else if (marqueeStartRef.current) {
+      if (marquee) {
+        // Finalise marquee → select captured waypoints.
+        const minX = Math.min(marquee.x0, marquee.x1);
+        const maxX = Math.max(marquee.x0, marquee.x1);
+        const minY = Math.min(marquee.y0, marquee.y1);
+        const maxY = Math.max(marquee.y0, marquee.y1);
+        const captured = waypoints
+          .filter((wp) => {
+            const wx = frameToX(wp.frame);
+            return wx >= minX && wx <= maxX && wp.y >= minY && wp.y <= maxY;
+          })
+          .map((wp) => ({ trackId: track.id, frame: wp.frame }));
+        onMarqueeSelect(captured, !e.shiftKey); // shift → additive, else replace
+        setMarquee(null);
+      } else {
+        // Plain click on empty space → deselect all.
+        if (!e.shiftKey) onClearSelection();
+      }
+      marqueeStartRef.current = null;
+    }
+  };
+
+  const handleMouseLeave = () => {
+    // Cancel both drag and marquee if the mouse leaves the SVG.
+    dragRef.current = null;
+    setIsDragging(false);
+    if (marquee) setMarquee(null);
+    marqueeStartRef.current = null;
+  };
+
+  const handleDoubleClick = (e) => {
+    if (isLocked) return;
     const { x, y } = svgCoords(e);
-    const { idx } = dragRef.current;
-    const wp = waypoints[idx];
-    const isEndpoint = wp.frame === 0 || wp.frame === MAX_FRAME;
-
-    // Endpoints are pinned on X; interior waypoints are constrained between neighbours.
-    const rawFrame    = Math.round((x / CANVAS_WIDTH) * MAX_FRAME);
-    const minFrame    = idx > 0                   ? waypoints[idx - 1].frame + 1 : 0;
-    const maxFrame    = idx < waypoints.length - 1 ? waypoints[idx + 1].frame - 1 : MAX_FRAME;
-    const newFrame    = isEndpoint ? wp.frame : Math.max(minFrame, Math.min(maxFrame, rawFrame));
-    const newY        = Math.max(0, Math.min(laneHeight, y));
-
+    if (hitTest(x, y) !== -1) return;
+    const frame = Math.max(1, Math.min(MAX_FRAME - 1, Math.round((x / CANVAS_WIDTH) * MAX_FRAME)));
+    const newY  = Math.max(0, Math.min(laneHeight, y));
     onUpdateWaypoints(
-      waypoints.map((w, i) => (i === idx ? { ...w, frame: newFrame, y: newY } : w))
+      [...waypoints, { frame, y: newY, handleIn: null, handleOut: null }].sort(
+        (a, b) => a.frame - b.frame
+      )
     );
   };
 
-  const stopDrag = () => {
-    dragRef.current = null;
-    setIsDragging(false);
-  };
-
-  // Double-click on empty space → add waypoint.
-  const handleDoubleClick = (e) => {
-    const { x, y } = svgCoords(e);
-    if (hitTest(x, y) !== -1) return; // clicked on an existing waypoint — ignore
-    const frame = Math.max(1, Math.min(MAX_FRAME - 1, Math.round((x / CANVAS_WIDTH) * MAX_FRAME)));
-    const newY  = Math.max(0, Math.min(laneHeight, y));
-    const newWp = { frame, y: newY, handleIn: null, handleOut: null };
-    onUpdateWaypoints([...waypoints, newWp].sort((a, b) => a.frame - b.frame));
-  };
-
-  // Right-click on interior waypoint → delete it.
   const handleContextMenu = (e) => {
     e.preventDefault();
+    if (isLocked) return;
     const { x, y } = svgCoords(e);
     const idx = hitTest(x, y);
     if (idx === -1) return;
     const wp = waypoints[idx];
-    if (wp.frame === 0 || wp.frame === MAX_FRAME) return; // protect endpoints
+    if (wp.frame === 0 || wp.frame === MAX_FRAME) return;
     onUpdateWaypoints(waypoints.filter((_, i) => i !== idx));
   };
 
-  // ── Render ───────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────
 
   return (
     <svg
@@ -145,82 +214,112 @@ function TrackSVG({ track, waypoints, laneHeight, onUpdateWaypoints }) {
       height={laneHeight}
       style={{
         overflow: "visible",
-        pointerEvents: "all",
+        pointerEvents: isLocked ? "none" : "all",
         cursor: isDragging ? "grabbing" : "crosshair",
       }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
-      onMouseUp={stopDrag}
-      onMouseLeave={stopDrag}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseLeave}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
     >
       {/* Zero / value-zero line */}
       <line
         x1={0} y1={zeroY} x2={CANVAS_WIDTH} y2={zeroY}
-        stroke="rgba(255,255,255,0.12)" strokeWidth={1} strokeDasharray="4 4"
+        stroke={isHidden ? "rgba(100,100,100,0.15)" : "rgba(255,255,255,0.12)"}
+        strokeWidth={1} strokeDasharray="4 4"
         style={{ pointerEvents: "none" }}
       />
 
       {/* Limit labels */}
-      <text x={6} y={14} fontSize={9} fill="rgba(255,255,255,0.25)"
-        fontWeight="700" letterSpacing="0.05em" style={{ pointerEvents: "none" }}>
+      <text x={6} y={14} fontSize={9} fontWeight="700" letterSpacing="0.05em"
+        fill={isHidden ? "rgba(100,100,100,0.2)" : "rgba(255,255,255,0.25)"}
+        style={{ pointerEvents: "none" }}>
         {max > 0 && min < 0 ? `+${max}` : max}{unit}
       </text>
-      <text x={6} y={laneHeight - 5} fontSize={9} fill="rgba(255,255,255,0.25)"
-        fontWeight="700" letterSpacing="0.05em" style={{ pointerEvents: "none" }}>
+      <text x={6} y={laneHeight - 5} fontSize={9} fontWeight="700" letterSpacing="0.05em"
+        fill={isHidden ? "rgba(100,100,100,0.2)" : "rgba(255,255,255,0.25)"}
+        style={{ pointerEvents: "none" }}>
         {min}{unit}
       </text>
 
-      {/* Curve path — non-interactive so clicks pass through to SVG background */}
+      {/* Curve path */}
       {pathD && (
         <path
           d={pathD}
           fill="none"
-          stroke={color}
+          stroke={pathColor}
           strokeWidth={2}
           strokeLinecap="round"
           strokeLinejoin="round"
-          opacity={0.85}
+          opacity={isHidden ? 0.4 : 0.85}
           style={{ pointerEvents: "none" }}
         />
       )}
 
       {/* Waypoint diamonds */}
       {waypoints.map((wp, idx) => {
-        const x  = frameToX(wp.frame);
-        const y  = wp.y;
-        const r  = DIAMOND_R;
+        const x = frameToX(wp.frame);
+        const y = wp.y;
+        const r = DIAMOND_R;
+        const selected   = isWpSelected(wp);
         const isEndpoint = wp.frame === 0 || wp.frame === MAX_FRAME;
+
         return (
           <polygon
             key={idx}
             points={`${x},${y - r} ${x + r},${y} ${x},${y + r} ${x - r},${y}`}
-            fill={color}
-            stroke={isEndpoint ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.55)"}
-            strokeWidth={1}
-            style={{ cursor: isDragging ? "grabbing" : "grab", pointerEvents: "none" }}
+            fill={wpColor}
+            stroke={
+              selected    ? "white" :
+              isEndpoint  ? "rgba(255,255,255,0.5)" :
+                            "rgba(0,0,0,0.55)"
+            }
+            strokeWidth={selected ? 2 : 1}
+            style={{
+              pointerEvents: "none",
+              cursor: isDragging ? "grabbing" : "grab",
+              filter: selected ? `drop-shadow(0 0 4px ${color})` : "none",
+            }}
           />
         );
       })}
+
+      {/* Marquee selection rectangle */}
+      {marquee && (
+        <rect
+          x={Math.min(marquee.x0, marquee.x1)}
+          y={Math.min(marquee.y0, marquee.y1)}
+          width={Math.abs(marquee.x1 - marquee.x0)}
+          height={Math.abs(marquee.y1 - marquee.y0)}
+          fill="rgba(255,213,0,0.06)"
+          stroke="rgba(255,213,0,0.55)"
+          strokeWidth={1}
+          strokeDasharray="4 3"
+          style={{ pointerEvents: "none" }}
+        />
+      )}
     </svg>
   );
 }
 
 // ─── CurveEditor (root) ───────────────────────────────────────────────────────
 
-export default function CurveEditor() {
+export default function CurveEditor({ lockedTracks, hiddenTracks }) {
   const ref0 = useRef(null);
   const ref1 = useRef(null);
   const ref2 = useRef(null);
   const laneRefs = [ref0, ref1, ref2];
 
   const [laneHeights, setLaneHeights] = useState([100, 100, 100]);
-  const [trackData, setTrackData] = useState(
+  const [trackData,   setTrackData]   = useState(
     () => Object.fromEntries(TRACKS.map((t) => [t.id, makeDefaultWaypoints(t, 100)]))
   );
+  // selectedWaypoints uses { trackId, frame } as a stable identity (frame never duplicates
+  // within a track, and is stable across reorders — unlike array index).
+  const [selectedWaypoints, setSelectedWaypoints] = useState([]); // Array<{ trackId, frame }>
 
-  // Measure actual lane heights after mount and re-initialise waypoint Y positions.
   useEffect(() => {
     const heights = laneRefs.map((r) => r.current?.clientHeight ?? 100);
     setLaneHeights(heights);
@@ -229,30 +328,82 @@ export default function CurveEditor() {
     );
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const updateWaypoints = (trackId, updated) =>
+  // ── Selection helpers ─────────────────────────────────────────────
+
+  const toggleWaypoint = ({ trackId, frame }) => {
+    setSelectedWaypoints((prev) => {
+      const exists = prev.some((s) => s.trackId === trackId && s.frame === frame);
+      return exists
+        ? prev.filter((s) => !(s.trackId === trackId && s.frame === frame))
+        : [...prev, { trackId, frame }];
+    });
+  };
+
+  const handleMarqueeSelect = (additions, replace) => {
+    setSelectedWaypoints((prev) => {
+      if (replace) return additions;
+      const deduped = additions.filter(
+        (a) => !prev.some((s) => s.trackId === a.trackId && s.frame === a.frame)
+      );
+      return [...prev, ...deduped];
+    });
+  };
+
+  const clearSelection = () => setSelectedWaypoints([]);
+
+  // ── Waypoint update (also prunes stale selection entries) ─────────
+
+  const updateWaypoints = (trackId, updated) => {
     setTrackData((prev) => ({ ...prev, [trackId]: updated }));
+    // If waypoints were deleted, remove them from selection too.
+    setSelectedWaypoints((prev) =>
+      prev.filter(
+        (s) => s.trackId !== trackId || updated.some((wp) => wp.frame === s.frame)
+      )
+    );
+  };
+
+  // ── Render ────────────────────────────────────────────────────────
 
   return (
     <>
-      {TRACKS.map((track, i) => (
-        <div
-          key={track.id}
-          ref={laneRefs[i]}
-          className="flex-1 border-b border-[#1B1B1D] relative overflow-hidden"
-        >
-          {/* Hex-mesh overlay — opacity raised when track visibility is toggled off */}
-          <div className="absolute inset-0 bg-hex-mesh opacity-0 pointer-events-none transition-opacity duration-300 z-0" />
-          {/* Dim overlay shown when track is locked */}
-          <div className="absolute inset-0 bg-white/10 opacity-0 pointer-events-none transition-opacity duration-300 z-20" />
+      {TRACKS.map((track, i) => {
+        const isLocked = lockedTracks?.has(track.id) ?? false;
+        const isHidden = hiddenTracks?.has(track.id) ?? false;
+        const trackSel = selectedWaypoints.filter((s) => s.trackId === track.id);
 
-          <TrackSVG
-            track={track}
-            waypoints={trackData[track.id]}
-            laneHeight={laneHeights[i]}
-            onUpdateWaypoints={(updated) => updateWaypoints(track.id, updated)}
-          />
-        </div>
-      ))}
+        return (
+          <div
+            key={track.id}
+            ref={laneRefs[i]}
+            className="flex-1 border-b border-[#1B1B1D] relative overflow-hidden"
+          >
+            {/* Hex-mesh overlay — opacity raised externally when track is hidden */}
+            <div
+              className="absolute inset-0 bg-hex-mesh pointer-events-none transition-opacity duration-300 z-0"
+              style={{ opacity: isHidden ? 1 : 0 }}
+            />
+            {/* Dim overlay shown when track is locked */}
+            <div
+              className="absolute inset-0 bg-white/[0.04] pointer-events-none transition-opacity duration-300 z-20"
+              style={{ opacity: isLocked ? 1 : 0 }}
+            />
+
+            <TrackSVG
+              track={track}
+              waypoints={trackData[track.id]}
+              laneHeight={laneHeights[i]}
+              isLocked={isLocked}
+              isHidden={isHidden}
+              selectedWaypoints={trackSel}
+              onUpdateWaypoints={(updated) => updateWaypoints(track.id, updated)}
+              onToggleWaypoint={toggleWaypoint}
+              onMarqueeSelect={handleMarqueeSelect}
+              onClearSelection={clearSelection}
+            />
+          </div>
+        );
+      })}
     </>
   );
 }

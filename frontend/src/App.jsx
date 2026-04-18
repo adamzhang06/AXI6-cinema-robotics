@@ -1,3 +1,4 @@
+import { useState } from "react";
 import "./index.css";
 import CurveEditor from "./components/CurveEditor";
 
@@ -300,10 +301,10 @@ function Viewport() {
 // ─────────────────────────────────────────────────────────────────
 
 /** One track label row (Slide / Pan / Tilt) in the left labels panel. */
-function TrackBlock({ id, name, color }) {
+function TrackBlock({ id, name, color, isHidden, isLocked, onToggleHide, onToggleLock }) {
   return (
     <div
-      className="track-block flex-1"
+      className={`track-block flex-1${isLocked ? " opacity-60" : ""}`}
       id={`track-${id}`}
       data-name={name}
       data-color={color}
@@ -312,53 +313,64 @@ function TrackBlock({ id, name, color }) {
         <span className="track-title flex-none w-14">{name}</span>
 
         <div className="flex-1 flex justify-center items-center gap-2">
-          {/* Visibility toggle (eye icon) */}
+          {/* Visibility toggle */}
           <button
-            className="text-white/40 hover:text-white transition-colors border-none bg-transparent"
-            title="Toggle Visibility"
+            onClick={onToggleHide}
+            className={`transition-colors border-none bg-transparent ${
+              isHidden ? "text-white/70" : "text-white/35 hover:text-white/70"
+            }`}
+            title={isHidden ? "Show Track" : "Hide Track"}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
-              <circle cx="12" cy="12" r="3" />
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+              fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {isHidden ? (
+                // Eye-off (slashed eye)
+                <>
+                  <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+                  <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+                  <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+                  <line x1="2" y1="2" x2="22" y2="22" />
+                </>
+              ) : (
+                // Eye
+                <>
+                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                  <circle cx="12" cy="12" r="3" />
+                </>
+              )}
             </svg>
           </button>
 
-          {/* Lock toggle (padlock icon) */}
+          {/* Lock toggle */}
           <button
-            className="text-white/40 hover:text-white transition-colors border-none bg-transparent"
-            title="Lock Track"
+            onClick={onToggleLock}
+            className={`transition-colors border-none bg-transparent ${
+              isLocked ? "text-[#FFD500]" : "text-white/35 hover:text-white/70"
+            }`}
+            title={isLocked ? "Unlock Track" : "Lock Track"}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24"
+              fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+              {isLocked ? (
+                // Closed shackle
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              ) : (
+                // Open shackle
+                <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+              )}
             </svg>
           </button>
         </div>
 
-        {/* Coloured indicator dot */}
+        {/* Coloured indicator dot — dimmed when hidden */}
         <div
           className="flex-none w-[14px] h-[14px] rounded-full pointer-events-none transition-all duration-300"
-          style={{ backgroundColor: color, boxShadow: `0 0 10px ${color}` }}
+          style={{
+            backgroundColor: color,
+            boxShadow: `0 0 10px ${color}`,
+            opacity: isHidden ? 0.3 : 1,
+          }}
         />
       </div>
     </div>
@@ -371,9 +383,19 @@ function TrackBlock({ id, name, color }) {
 function Timeline() {
   const tracks = [
     { id: "slide", name: "Slide", color: "#3993DD" },
-    { id: "pan", name: "Pan", color: "#ff4444" },
-    { id: "tilt", name: "Tilt", color: "#44ff44" },
+    { id: "pan",   name: "Pan",   color: "#ff4444" },
+    { id: "tilt",  name: "Tilt",  color: "#44ff44" },
   ];
+
+  const [lockedTracks, setLockedTracks] = useState(new Set());
+  const [hiddenTracks, setHiddenTracks] = useState(new Set());
+
+  const toggle = (setter, id) =>
+    setter((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   return (
     <div className="flex flex-col gap-[2px] h-full overflow-hidden">
@@ -676,7 +698,14 @@ function Timeline() {
           </div>
 
           {tracks.map((t) => (
-            <TrackBlock key={t.id} {...t} />
+            <TrackBlock
+              key={t.id}
+              {...t}
+              isLocked={lockedTracks.has(t.id)}
+              isHidden={hiddenTracks.has(t.id)}
+              onToggleLock={() => toggle(setLockedTracks, t.id)}
+              onToggleHide={() => toggle(setHiddenTracks, t.id)}
+            />
           ))}
         </div>
 
@@ -699,7 +728,7 @@ function Timeline() {
               className="absolute left-0 right-0 flex flex-col z-10"
               style={{ top: 30, bottom: 0 }}
             >
-              <CurveEditor />
+              <CurveEditor lockedTracks={lockedTracks} hiddenTracks={hiddenTracks} />
             </div>
 
             {/* Playhead (draggable red vertical line) */}
