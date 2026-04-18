@@ -1193,6 +1193,7 @@ function RightSidebar({
   curveEditorRef,
   waypointsByTrack,
   connectionStatus,
+  piStatus,
 }) {
   const trackInfo = TRACKS_INFO.find((t) => t.id === activeTrack) ?? null;
   const activeWps = activeTrack ? (waypointsByTrack[activeTrack] ?? []) : [];
@@ -1360,11 +1361,17 @@ function RightSidebar({
       <div className="pt-2 border-t border-white/[0.06]">
         <span className="ctrl-label block mb-1.5">Websocket</span>
         <div className="flex gap-2 items-center flex-wrap">
-          {/* Pi — inactive for now */}
+          {/* Pi — wired to piStatus from hub broadcast */}
           <div className="flex items-center gap-[5px]">
-            <div className="w-[7px] h-[7px] rounded-full bg-[#555] shrink-0 transition-[background,box-shadow] duration-300" />
+            <div
+              className={`w-[7px] h-[7px] rounded-full shrink-0 transition-[background,box-shadow] duration-300 ${
+                piStatus === "connected"
+                  ? "bg-green-500 shadow-[0_0_6px_#22c55e]"
+                  : "bg-red-500 shadow-[0_0_6px_#ef4444]"
+              }`}
+            />
             <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
-              Pi: —
+              Pi: {piStatus === "connected" ? "OK" : "OFF"}
             </span>
           </div>
           <div className="w-px h-3 bg-white/[0.08] shrink-0" />
@@ -1396,7 +1403,7 @@ export default function App() {
   const [currentFrame, setCurrentFrame] = useState(0);
   const [activeTrack, setActiveTrack] = useState(null);
   const [waypointsByTrack, setWaypointsByTrack] = useState({});
-  const { connectionStatus, sendMessage } = useAXI6Socket();
+  const { connectionStatus, piStatus, sendMessage } = useAXI6Socket();
 
   const handleWaypointsChange = (trackId, waypoints) => {
     setWaypointsByTrack((prev) => ({ ...prev, [trackId]: waypoints }));
@@ -1435,6 +1442,7 @@ export default function App() {
           curveEditorRef={curveEditorRef}
           waypointsByTrack={waypointsByTrack}
           connectionStatus={connectionStatus}
+          piStatus={piStatus}
         />
       </div>
     </div>

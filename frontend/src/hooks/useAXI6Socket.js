@@ -4,6 +4,7 @@ const WS_URL = "ws://localhost:8000/ws/ui";
 
 export function useAXI6Socket() {
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
+  const [piStatus, setPiStatus] = useState("disconnected");
   const wsRef = useRef(null);
 
   const sendMessage = useCallback((payload) => {
@@ -32,9 +33,20 @@ export function useAXI6Socket() {
       ws.onclose = () => {
         if (unmounted) return;
         setConnectionStatus("disconnected");
+        setPiStatus("disconnected");   // Pi is unreachable if backend drops
         reconnectTimer = setTimeout(connect, 3000);
       };
       ws.onerror = () => ws.close();
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.command === "pi_status") {
+            setPiStatus(data.status);
+          }
+        } catch {
+          /* noop */
+        }
+      };
     };
 
     connect();
@@ -50,5 +62,5 @@ export function useAXI6Socket() {
     };
   }, []);
 
-  return { connectionStatus, sendMessage };
+  return { connectionStatus, piStatus, sendMessage };
 }

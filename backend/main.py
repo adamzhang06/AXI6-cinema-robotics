@@ -25,6 +25,8 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections[client_id] = websocket
         print(f"[+] {client_id} connected  (active: {list(self.active_connections)})")
+        if client_id == "pi":
+            await self.send_to("ui", json.dumps({"sender": "hub", "command": "pi_status", "status": "connected"}))
 
     def disconnect(self, client_id: str):
         self.active_connections.pop(client_id, None)
@@ -62,13 +64,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             command = data.get("command", "")
 
             if command == "save_trajectory":
-                print(f"\n🟢  TRAJECTORY SAVED: {data}\n")
+                print("\n🟢  TRAJECTORY SAVED — forwarding to pi\n")
+                await manager.send_to("pi", raw)   # forward full payload to Pi
                 await manager.send_to(
                     client_id, json.dumps({"ack": "save_trajectory", "status": "ok"})
                 )
 
             elif command == "execute_move":
-                print("\n🚀  EXECUTING MOVE...\n")
+                print("\n🚀  EXECUTING MOVE — forwarding to pi\n")
+                await manager.send_to("pi", json.dumps({"command": "execute_move"}))
                 await manager.send_to(
                     client_id, json.dumps({"ack": "execute_move", "status": "ok"})
                 )
@@ -82,3 +86,5 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
     except WebSocketDisconnect:
         manager.disconnect(client_id)
+        if client_id == "pi":
+            await manager.send_to("ui", json.dumps({"sender": "hub", "command": "pi_status", "status": "disconnected"}))
