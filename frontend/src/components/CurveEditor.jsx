@@ -193,7 +193,8 @@ function TrackSVG({
   onMarqueeSelect,
   onClearSelection,
   onSetPrimary,
-  onSnapFrame, // (rawFrame) => snappedFrame — cross-track snap from parent
+  onSnapFrame,       // (rawFrame) => snappedFrame — cross-track snap from parent
+  onSetActiveTrack,  // () => void — notify parent this track became active
 }) {
   const svgRef          = useRef(null);
   const dragRef         = useRef(null);
@@ -249,7 +250,7 @@ function TrackSVG({
 
   const handlePointerDown = (e) => {
     if (isLocked || e.button !== 0) return;
-    try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+    try { e.target.setPointerCapture(e.pointerId); } catch { /* noop */ }
     const { x, y } = svgCoords(e);
 
     // Handle circles have priority over waypoint diamonds
@@ -269,6 +270,7 @@ function TrackSVG({
 
     const idx = hitTest(x, y);
     if (idx !== -1) {
+      onSetActiveTrack?.();
       if (e.shiftKey) {
         onToggleWaypoint({ trackId: track.id, frame: waypoints[idx].frame });
         onSetPrimary(waypoints[idx].frame);
@@ -425,7 +427,7 @@ function TrackSVG({
   };
 
   const handlePointerUp = (e) => {
-    try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
+    try { e.target.releasePointerCapture(e.pointerId); } catch { /* noop */ }
 
     if (dragRef.current) {
       if (dragRef.current.type === "waypoint" &&
@@ -454,7 +456,7 @@ function TrackSVG({
   };
 
   const handlePointerCancel = (e) => {
-    try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
+    try { e.target.releasePointerCapture(e.pointerId); } catch { /* noop */ }
     dragRef.current = null;
     setIsDragging(false);
     if (marquee) setMarquee(null);
@@ -470,6 +472,7 @@ function TrackSVG({
     const nextWaypoints = [...waypoints, { frame, y: newY, handleIn: null, handleOut: null }].sort((a, b) => a.frame - b.frame);
     onUpdateWaypoints(clampHandles(nextWaypoints));
     onSetPrimary(frame);
+    onSetActiveTrack?.();
   };
 
   const handleContextMenu = (e) => {
@@ -483,7 +486,6 @@ function TrackSVG({
     onUpdateWaypoints(clampHandles(waypoints.filter((_, i) => i !== idx)));
   };
 
-  const primaryWp = primaryFrame !== null ? waypoints.find((wp) => wp.frame === primaryFrame) : null;
 
   // ── Render ────────────────────────────────────────────────────────
 
@@ -606,6 +608,8 @@ const CurveEditor = forwardRef(function CurveEditor({
   maxFrame,
   canvasWidth = BASE_CANVAS_W,
   isSnapping = true,
+  onSetActiveTrack,   // (trackId: string) => void
+  onWaypointsChange,  // (trackId: string, waypoints: array) => void
   lockedTracks,
   hiddenTracks,
 }, ref) {
@@ -626,7 +630,7 @@ const CurveEditor = forwardRef(function CurveEditor({
   // Measure actual lane heights after mount.
   useEffect(() => {
     const heights = laneRefs.map((r) => r.current?.clientHeight ?? 100);
-    setLaneHeights(heights);
+    setLaneHeights(heights); // eslint-disable-line react-hooks/set-state-in-effect
     setTrackData(Object.fromEntries(
       TRACKS.map((t, i) => [t.id, makeDefaultWaypoints(t, heights[i], maxFrame)])
     ));
@@ -662,6 +666,12 @@ const CurveEditor = forwardRef(function CurveEditor({
       p.frame > maxFrame ? null : p
     );
   }, [maxFrame]);
+
+  // Notify parent whenever trackData changes (mirrors internal state for sidebar).
+  useEffect(() => {
+    if (!onWaypointsChange) return;
+    TRACKS.forEach(({ id }) => onWaypointsChange(id, trackData[id] ?? []));
+  }, [trackData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Selection helpers ─────────────────────────────────────────────
 
@@ -749,9 +759,8 @@ const CurveEditor = forwardRef(function CurveEditor({
       return [...frames].sort((a, b) => a - b);
     },
 
-    resetPrimaryTrack() {
-      if (!primarySelection) return;
-      const { trackId } = primarySelection;
+    resetTrack(trackId) {
+      if (!trackId) return;
       setTrackData((current) => {
         const wps = current[trackId];
         if (!wps) return current;
@@ -759,9 +768,38 @@ const CurveEditor = forwardRef(function CurveEditor({
         const end   = wps.find((wp) => wp.frame === maxFrame);
         return { ...current, [trackId]: [start, end].filter(Boolean) };
       });
-      setSelectedWaypoints((prev) => prev.filter((s) => s.trackId !== primarySelection.trackId));
+      setSelectedWaypoints((prev) => prev.filter((s) => s.trackId !== trackId));
     },
-  }), [primarySelection, selectedWaypoints, maxFrame, trackData]);
+
+    addWaypointAt(trackId, frame) {
+      const trackIdx = TRACKS.findIndex((t) => t.id === trackId);
+      const lh = laneHeights[trackIdx] ?? 100;
+      const f  = Math.max(1, Math.min(maxFrame - 1, frame));
+      setTrackData((current) => {
+        const wps = current[trackId] ?? [];
+        if (wps.some((wp) => wp.frame === f)) return current;
+        const prev = [...wps].reverse().find((wp) => wp.frame < f);
+        const next = wps.find((wp) => wp.frame > f);
+        let y = lh / 2;
+        if (prev && next) {
+          const t = (f - prev.frame) / (next.frame - prev.frame);
+          y = prev.y + t * (next.y - prev.y);
+        } else if (prev) { y = prev.y; }
+        else if (next)   { y = next.y; }
+        const newWps = [...wps, { frame: f, y, handleIn: null, handleOut: null }]
+          .sort((a, b) => a.frame - b.frame);
+        return { ...current, [trackId]: clampHandles(newWps) };
+      });
+    },
+
+    removeWaypointAt(trackId, frame) {
+      if (frame === 0 || frame === maxFrame) return;
+      setTrackData((current) => {
+        const wps = current[trackId] ?? [];
+        return { ...current, [trackId]: clampHandles(wps.filter((wp) => wp.frame !== frame)) };
+      });
+    },
+  }), [primarySelection, selectedWaypoints, maxFrame, trackData, laneHeights]);
 
   // ── Render ────────────────────────────────────────────────────────
 
@@ -800,6 +838,7 @@ const CurveEditor = forwardRef(function CurveEditor({
               onClearSelection={clearSelection}
               onSetPrimary={(frame) => handleSetPrimary(track.id, frame)}
               onSnapFrame={(rawFrame) => getSnapFrame(rawFrame, track.id)}
+              onSetActiveTrack={() => onSetActiveTrack?.(track.id)}
             />
           </div>
         );

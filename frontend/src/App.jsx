@@ -9,6 +9,12 @@ const CINEMATIC_FPS = 24;
 const BASE_CANVAS_W = 6000;
 const FALLBACK_DURATION_S = 10;
 
+const TRACKS_INFO = [
+  { id: "slide", name: "Slide", color: "#3993DD" },
+  { id: "pan", name: "Pan", color: "#ff4444" },
+  { id: "tilt", name: "Tilt", color: "#44ff44" },
+];
+
 function secsToTC(totalSecs, fps = CINEMATIC_FPS) {
   const s = Math.max(0, totalSecs);
   const hh = Math.floor(s / 3600);
@@ -18,24 +24,6 @@ function secsToTC(totalSecs, fps = CINEMATIC_FPS) {
   return [hh, mm, ss, ff]
     .map((n) => String(Math.floor(n)).padStart(2, "0"))
     .join(":");
-}
-
-function tcToSecs(tc, fps = CINEMATIC_FPS) {
-  const str = (tc ?? "").trim();
-  if (!str) return null;
-  const parts = str.split(":");
-  const nums = parts.map(Number);
-  if (nums.some(isNaN) || nums.some((n) => n < 0)) return null;
-  if (parts.length === 4) {
-    const [hh, mm, ss, ff] = nums;
-    return hh * 3600 + mm * 60 + ss + ff / fps;
-  }
-  if (parts.length === 3) {
-    const [mm, ss, ff] = nums;
-    return mm * 60 + ss + ff / fps;
-  }
-  if (parts.length === 1) return nums[0];
-  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -353,15 +341,18 @@ function TrackBlock({
   color,
   isHidden,
   isLocked,
+  isActive,
+  onSelect,
   onToggleHide,
   onToggleLock,
 }) {
   return (
     <div
-      className={`track-block flex-1${isLocked ? " opacity-60" : ""}`}
+      className={`track-block flex-1${isLocked ? " opacity-60" : ""}${isActive ? " selected" : ""}`}
       id={`track-${id}`}
       data-name={name}
       data-color={color}
+      onClick={onSelect}
     >
       <div className="flex items-center pr-3 w-full">
         <span className="track-title flex-none w-14">{name}</span>
@@ -369,7 +360,10 @@ function TrackBlock({
         <div className="flex-1 flex justify-center items-center gap-2">
           {/* Visibility toggle */}
           <button
-            onClick={onToggleHide}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleHide();
+            }}
             className={`transition-colors border-none bg-transparent ${
               isHidden ? "text-white/70" : "text-white/35 hover:text-white/70"
             }`}
@@ -406,7 +400,10 @@ function TrackBlock({
 
           {/* Lock toggle */}
           <button
-            onClick={onToggleLock}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleLock();
+            }}
             className={`transition-colors border-none bg-transparent ${
               isLocked ? "text-[#FFD500]" : "text-white/35 hover:text-white/70"
             }`}
@@ -452,12 +449,15 @@ function TrackBlock({
 // ─────────────────────────────────────────────────────────────────
 // TIMELINE  (bottom half of center content)
 // ─────────────────────────────────────────────────────────────────
-function Timeline() {
-  const tracks = [
-    { id: "slide", name: "Slide", color: "#3993DD" },
-    { id: "pan", name: "Pan", color: "#ff4444" },
-    { id: "tilt", name: "Tilt", color: "#44ff44" },
-  ];
+function Timeline({
+  currentFrame,
+  setCurrentFrame,
+  activeTrack,
+  setActiveTrack,
+  curveEditorRef,
+  onWaypointsChange,
+}) {
+  const tracks = TRACKS_INFO;
 
   const [lockedTracks, setLockedTracks] = useState(new Set());
   const [hiddenTracks, setHiddenTracks] = useState(new Set());
@@ -472,12 +472,10 @@ function Timeline() {
   // ── Duration & scrubber state ─────────────────────────────────
   const [durationS, setDurationS] = useState(FALLBACK_DURATION_S);
   const [durationInput, setDurationInput] = useState(`${FALLBACK_DURATION_S}s`);
-  const [currentFrame, setCurrentFrame] = useState(0);
-  const [isPlaying,  setIsPlaying]  = useState("paused"); // 'forward' | 'reverse' | 'paused'
+  const [isPlaying, setIsPlaying] = useState("paused"); // 'forward' | 'reverse' | 'paused'
   const [isSnapping, setIsSnapping] = useState(true);
 
   const viewportRef = useRef(null);
-  const curveEditorRef = useRef(null);
   const [viewportWidth, setViewportWidth] = useState(1000); // fallback
 
   useEffect(() => {
@@ -558,7 +556,7 @@ function Timeline() {
   // Clamp scrubber when duration shrinks.
   useEffect(() => {
     setCurrentFrame((prev) => Math.min(prev, maxFrame));
-  }, [maxFrame]);
+  }, [maxFrame, setCurrentFrame]);
 
   // 24fps playback loop.
   useEffect(() => {
@@ -585,10 +583,11 @@ function Timeline() {
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isPlaying, maxFrame]);
+  }, [isPlaying, maxFrame, setCurrentFrame]);
 
   // Pause automatically when playhead hits a boundary.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (isPlaying === "forward" && currentFrame >= maxFrame)
       setIsPlaying("paused");
     if (isPlaying === "reverse" && currentFrame <= 0) setIsPlaying("paused");
@@ -623,10 +622,14 @@ function Timeline() {
   const snapFrame = (rawFrame) => {
     if (!isSnapping) return rawFrame;
     const frames = curveEditorRef.current?.getAllWaypointFrames() ?? [];
-    let best = rawFrame, bestDist = 4 + 1; // SNAP_DEADZONE = 4
+    let best = rawFrame,
+      bestDist = 4 + 1; // SNAP_DEADZONE = 4
     for (const f of frames) {
       const d = Math.abs(f - rawFrame);
-      if (d < bestDist) { bestDist = d; best = f; }
+      if (d < bestDist) {
+        bestDist = d;
+        best = f;
+      }
     }
     return best;
   };
@@ -635,14 +638,19 @@ function Timeline() {
     e.stopPropagation();
     try {
       e.target.setPointerCapture(e.pointerId);
-    } catch (_) {}
+    } catch {
+      /* noop */
+    }
     isScrubbing.current = true;
     scrubMouseX.current = e.clientX;
     startAutoScroll();
 
     if (canvasRef.current) {
       const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
-      const raw = Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)));
+      const raw = Math.max(
+        0,
+        Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)),
+      );
       setCurrentFrame(snapFrame(raw));
     }
   };
@@ -651,13 +659,18 @@ function Timeline() {
     scrubMouseX.current = e.clientX;
 
     const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
-    const raw = Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)));
+    const raw = Math.max(
+      0,
+      Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)),
+    );
     setCurrentFrame(snapFrame(raw));
   };
   const handleScrubUp = (e) => {
     try {
       e.target.releasePointerCapture(e.pointerId);
-    } catch (_) {}
+    } catch {
+      /* noop */
+    }
     isScrubbing.current = false;
     scrubMouseX.current = null;
     if (scrubRaf.current) {
@@ -713,8 +726,11 @@ function Timeline() {
 
           {/* Centred button row */}
           <div className="flex items-center gap-1.5 p-0.5">
-            {/* Eraser — resets primary track to two endpoints */}
-            <PlaybackBtn title="Clear all waypoints" onClick={() => curveEditorRef.current?.resetPrimaryTrack()}>
+            {/* Eraser — resets active track to two endpoints */}
+            <PlaybackBtn
+              title="Clear all waypoints"
+              onClick={() => curveEditorRef.current?.resetTrack(activeTrack)}
+            >
               <svg
                 className="w-4 h-4"
                 xmlns="http://www.w3.org/2000/svg"
@@ -732,7 +748,11 @@ function Timeline() {
             </PlaybackBtn>
 
             {/* Magnet snap */}
-            <PlaybackBtn title="Toggle waypoint snap" active={isSnapping} onClick={() => setIsSnapping((v) => !v)}>
+            <PlaybackBtn
+              title="Toggle waypoint snap"
+              active={isSnapping}
+              onClick={() => setIsSnapping((v) => !v)}
+            >
               <svg
                 className="w-4 h-4"
                 xmlns="http://www.w3.org/2000/svg"
@@ -1014,6 +1034,8 @@ function Timeline() {
             <TrackBlock
               key={t.id}
               {...t}
+              isActive={activeTrack === t.id}
+              onSelect={() => setActiveTrack(t.id)}
               isLocked={lockedTracks.has(t.id)}
               isHidden={hiddenTracks.has(t.id)}
               onToggleLock={() => toggle(setLockedTracks, t.id)}
@@ -1063,7 +1085,8 @@ function Timeline() {
                 maxFrame={maxFrame}
                 canvasWidth={canvasWidth}
                 isSnapping={isSnapping}
-                onFrameChange={setCurrentFrame}
+                onSetActiveTrack={setActiveTrack}
+                onWaypointsChange={onWaypointsChange}
                 lockedTracks={lockedTracks}
                 hiddenTracks={hiddenTracks}
               />
@@ -1093,31 +1116,58 @@ function Timeline() {
 // ─────────────────────────────────────────────────────────────────
 // RIGHT SIDEBAR  (300 px — Settings panel)
 // ─────────────────────────────────────────────────────────────────
-function RightSidebar() {
+function RightSidebar({
+  activeTrack,
+  currentFrame,
+  setCurrentFrame,
+  curveEditorRef,
+  waypointsByTrack,
+}) {
+  const trackInfo = TRACKS_INFO.find((t) => t.id === activeTrack) ?? null;
+  const activeWps = activeTrack ? (waypointsByTrack[activeTrack] ?? []) : [];
+  const hasAtFrame = activeWps.some((wp) => wp.frame === currentFrame);
+  const prevWp = [...activeWps].reverse().find((wp) => wp.frame < currentFrame);
+  const nextWp = activeWps.find((wp) => wp.frame > currentFrame);
+  const prevFrame = prevWp?.frame ?? null;
+  const nextFrame = nextWp?.frame ?? null;
+  const noTrack = !activeTrack;
+
+  const btnBase =
+    "flex items-center justify-center h-7 rounded bg-[#252528] border border-white/10 transition-colors";
+  const btnActive = "text-white/50 hover:text-white hover:bg-white/10";
+  const btnDisabled = "text-white/20 cursor-not-allowed";
+
   return (
     <div className="bg-[var(--bg-main)] flex flex-col p-2">
       <h2 className="panel-header">Settings</h2>
 
-      {/* Selected track info — hidden until a track is clicked */}
-      <div className="flex items-center gap-2 mb-4 hidden bg-[#252528] p-2 rounded border border-white/5">
-        <div className="w-3 h-3 rounded-full" />
+      {/* Active track info badge */}
+      <div
+        className={`flex items-center gap-2 mb-4 bg-[#252528] p-2 rounded border border-white/5 transition-opacity duration-200 ${noTrack ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+      >
+        <div
+          className="w-3 h-3 rounded-full shrink-0"
+          style={{ backgroundColor: trackInfo?.color ?? "transparent" }}
+        />
         <span className="text-sm text-white font-bold opacity-90 tracking-wide">
-          Track Name
+          {trackInfo?.name ?? "—"}
         </span>
       </div>
 
-      {/* Waypoint controls — hidden until a track is selected */}
-      <div className="hidden mb-4">
+      {/* Waypoint controls */}
+      <div
+        className={`mb-4 transition-opacity duration-200 ${noTrack ? "opacity-40 pointer-events-none" : "opacity-100"}`}
+      >
         <span className="text-[9px] text-white/30 uppercase tracking-widest font-bold block mb-1.5">
           Waypoint
         </span>
         <div className="flex items-center gap-1">
           {/* Prev */}
           <button
-            className="flex-1 flex items-center justify-center h-7 rounded bg-[#252528]
-                             border border-white/10 text-white/50 hover:text-white hover:bg-white/10
-                             transition-colors"
+            className={`flex-1 ${btnBase} ${prevFrame !== null ? btnActive : btnDisabled}`}
             title="Go to previous waypoint"
+            disabled={prevFrame === null}
+            onClick={() => prevFrame !== null && setCurrentFrame(prevFrame)}
           >
             <svg
               width="12"
@@ -1132,25 +1182,44 @@ function RightSidebar() {
               <polyline points="15 18 9 12 15 6" />
             </svg>
           </button>
-          {/* Add / remove at scrubber */}
+
+          {/* Add / Remove at scrubber */}
           <button
-            className="flex-[1.4] flex items-center justify-center h-7 rounded bg-[#252528]
-                             border border-white/10 hover:bg-white/10 transition-colors"
-            title="Add / remove waypoint at current frame"
+            className={`flex-[1.4] ${btnBase} hover:bg-white/10`}
+            title={
+              hasAtFrame
+                ? "Remove waypoint at current frame"
+                : "Add waypoint at current frame"
+            }
+            onClick={() => {
+              if (!activeTrack) return;
+              if (hasAtFrame) {
+                curveEditorRef.current?.removeWaypointAt(
+                  activeTrack,
+                  currentFrame,
+                );
+              } else {
+                curveEditorRef.current?.addWaypointAt(
+                  activeTrack,
+                  currentFrame,
+                );
+              }
+            }}
           >
             <svg width="13" height="13" viewBox="0 0 24 24">
               <polygon
                 points="12,2 22,12 12,22 2,12"
-                fill="rgba(255,255,255,0.45)"
+                fill={hasAtFrame ? "#ef4444" : "rgba(255,255,255,0.45)"}
               />
             </svg>
           </button>
+
           {/* Next */}
           <button
-            className="flex-1 flex items-center justify-center h-7 rounded bg-[#252528]
-                             border border-white/10 text-white/50 hover:text-white hover:bg-white/10
-                             transition-colors"
+            className={`flex-1 ${btnBase} ${nextFrame !== null ? btnActive : btnDisabled}`}
             title="Go to next waypoint"
+            disabled={nextFrame === null}
+            onClick={() => nextFrame !== null && setCurrentFrame(nextFrame)}
           >
             <svg
               width="12"
@@ -1168,12 +1237,11 @@ function RightSidebar() {
 
           <div className="w-px h-4 bg-white/10 mx-0.5" />
 
-          {/* Reset to centre */}
+          {/* Reset / erase track */}
           <button
-            className="flex items-center justify-center w-7 h-7 rounded bg-[#252528]
-                             border border-white/10 text-white/50 hover:text-white hover:bg-white/10
-                             transition-colors"
-            title="Reset waypoints to vertical centre"
+            className={`w-7 ${btnBase} ${btnActive}`}
+            title="Reset track waypoints to endpoints"
+            onClick={() => curveEditorRef.current?.resetTrack(activeTrack)}
           >
             <svg
               width="13"
@@ -1189,28 +1257,6 @@ function RightSidebar() {
               <path d="M3 3v5h5" />
             </svg>
           </button>
-        </div>
-
-        {/* Boundary limit input */}
-        <div className="flex items-center justify-between mt-2">
-          <span className="text-[9px] text-white/30 uppercase tracking-widest font-bold">
-            Boundary
-          </span>
-          <div className="flex items-center gap-1">
-            <input
-              type="number"
-              min="1"
-              max="100"
-              defaultValue="100"
-              step="1"
-              className="w-14 bg-[#111113] border border-white/10 rounded px-1.5 py-0.5
-                         text-[11px] text-[#FFD500] text-right outline-none appearance-none"
-              style={{ fontFamily: "var(--font-mono)" }}
-            />
-            <span className="text-[10px] text-white/35 font-semibold min-w-[12px]">
-              cm
-            </span>
-          </div>
         </div>
       </div>
 
@@ -1242,20 +1288,14 @@ function RightSidebar() {
       {/* Connection status indicators */}
       <div className="flex gap-2 items-center flex-wrap pt-2 border-t border-white/[0.06]">
         <div className="flex items-center gap-[5px]">
-          <div
-            className="w-[7px] h-[7px] rounded-full bg-[#555] shrink-0
-                          transition-[background,box-shadow] duration-300"
-          />
+          <div className="w-[7px] h-[7px] rounded-full bg-[#555] shrink-0 transition-[background,box-shadow] duration-300" />
           <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
             WS: —
           </span>
         </div>
         <div className="w-px h-3 bg-white/[0.08] shrink-0" />
         <div className="flex items-center gap-[5px]">
-          <div
-            className="w-[7px] h-[7px] rounded-full bg-[#555] shrink-0
-                          transition-[background,box-shadow] duration-300"
-          />
+          <div className="w-[7px] h-[7px] rounded-full bg-[#555] shrink-0 transition-[background,box-shadow] duration-300" />
           <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
             Server: —
           </span>
@@ -1269,6 +1309,15 @@ function RightSidebar() {
 // APP ROOT
 // ─────────────────────────────────────────────────────────────────
 export default function App() {
+  const curveEditorRef = useRef(null);
+  const [currentFrame, setCurrentFrame] = useState(0);
+  const [activeTrack, setActiveTrack] = useState(null);
+  const [waypointsByTrack, setWaypointsByTrack] = useState({});
+
+  const handleWaypointsChange = (trackId, waypoints) => {
+    setWaypointsByTrack((prev) => ({ ...prev, [trackId]: waypoints }));
+  };
+
   return (
     <div className="grid grid-rows-[24px_1fr] h-screen w-screen gap-[2px] overflow-hidden text-[#cccccc]">
       <Navbar />
@@ -1283,10 +1332,23 @@ export default function App() {
             <LeftSidebar />
             <Viewport />
           </div>
-          <Timeline />
+          <Timeline
+            currentFrame={currentFrame}
+            setCurrentFrame={setCurrentFrame}
+            activeTrack={activeTrack}
+            setActiveTrack={setActiveTrack}
+            curveEditorRef={curveEditorRef}
+            onWaypointsChange={handleWaypointsChange}
+          />
         </div>
 
-        <RightSidebar />
+        <RightSidebar
+          activeTrack={activeTrack}
+          currentFrame={currentFrame}
+          setCurrentFrame={setCurrentFrame}
+          curveEditorRef={curveEditorRef}
+          waypointsByTrack={waypointsByTrack}
+        />
       </div>
     </div>
   );
