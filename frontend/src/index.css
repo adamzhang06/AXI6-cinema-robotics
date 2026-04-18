@@ -1,1 +1,184 @@
 @import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────
+   DESIGN TOKENS
+   Custom properties used throughout the app. Referencing them via
+   bg-[var(--bg-main)] etc. in JSX keeps colors consistent.
+───────────────────────────────────────────────────────────────── */
+:root {
+  --bg-gap:       #08080A;  /* outermost gutter colour */
+  --bg-main:      #1B1B1D;  /* primary panel background */
+  --bg-main-light:#252528;  /* slightly lighter (navbar, inputs) */
+  --bg-lighter:   #222225;  /* track blocks & viewports */
+  --highlight:    #FFD500;  /* yellow accent */
+  --font-apple:   -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                  "Helvetica Neue", Arial, sans-serif;
+  --font-mono:    ui-monospace, SFMono-Regular, Menlo, Monaco,
+                  Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   BASE
+───────────────────────────────────────────────────────────────── */
+body {
+  background-color: var(--bg-gap);
+  color: #cccccc;
+  font-family: var(--font-apple);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   COMPONENT CLASSES
+   Defined in @layer components so Tailwind utility classes always
+   win over them (no !important needed for overrides in JSX).
+───────────────────────────────────────────────────────────────── */
+@layer components {
+
+  /* Section headings ─────────────────────────────────────────── */
+  .panel-header {
+    display: block;
+    margin-bottom: 1rem;          /* overridable with mb-* utility */
+    font-size: 0.875rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: white;
+    opacity: 0.9;
+  }
+
+  /* Small all-caps label used above sliders / sections ────────── */
+  .ctrl-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.35);
+  }
+
+  /* Icon button in the playback bar ───────────────────────────── */
+  .playback-btn {
+    display: flex;
+    width:  2rem;
+    height: 2rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.25rem;
+    color: rgba(255, 255, 255, 0.7);
+    background: transparent;
+    border: none;
+    transition: background-color 200ms ease, color 200ms ease;
+  }
+  .playback-btn:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: white;
+  }
+
+  /* Timeline header bar on the right half ─────────────────────── */
+  .secondary-header {
+    display: flex;
+    height: 100%;
+    align-items: center;
+    background-color: var(--bg-main);
+    padding: 0.5rem;
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  /* Track label rows (Slide / Pan / Tilt) ────────────────────── */
+  .track-block {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    cursor: pointer;
+    border-bottom: 1px solid #0a0a0c;
+    background-color: var(--bg-lighter);
+    padding-inline: 1rem;
+    transition: background-color 150ms ease;
+  }
+  .track-block:not(.selected):hover { background-color: #252527; }
+  .track-block.selected {
+    background-color: #2a2a2e;
+    border-left: 3px solid var(--highlight);
+  }
+
+  /* "SLIDE" / "PAN" etc text inside each track block ─────────── */
+  .track-title {
+    padding-left: 0.5rem;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  /* Segmented pill for Trajectory / Tracking mode ─────────────── */
+  .mode-pill {
+    display: flex;
+    border-radius: 6px;
+    background-color: #1a1a1c;
+    overflow: hidden;
+  }
+  .mode-seg {
+    flex: 1;
+    padding: 6px 0;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.4);
+    background: transparent;
+    border: none;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .mode-seg:hover { background-color: rgba(255, 255, 255, 0.05); }
+  .mode-seg.active {
+    background-color: var(--highlight);
+    color: #000;
+  }
+
+  /* Joystick directional wedge cells ──────────────────────────── */
+  .joystick-wedge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #2a2a2c;
+    color: var(--highlight);
+    opacity: 0.7;
+    cursor: pointer;
+    border: none;
+    transition: background-color 150ms ease, opacity 150ms ease;
+  }
+  .joystick-wedge:hover  { background-color: #38383b; opacity: 0.9; }
+  .joystick-wedge:active { background-color: #4a4a4e; opacity: 1; }
+
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   UTILITY HELPERS  (not Tailwind utilities — one-offs)
+───────────────────────────────────────────────────────────────── */
+
+/* Hex-mesh overlay shown when a track is hidden */
+.bg-hex-mesh {
+  background-image: url("data:image/svg+xml,%3Csvg width='24' height='41.5' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12 0l12 20.75-12 20.75L0 20.75z' fill='none' stroke='%23333' stroke-width='1.5' stroke-opacity='0.4'/%3E%3C/svg%3E");
+  background-size: 6px 10px;
+  background-color: rgba(20, 20, 20, 0.4);
+  background-repeat: repeat;
+}
+
+/* Hide scrollbars on the curve canvas */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Camera recording dot pulse */
+@keyframes cam-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+.animate-cam-pulse {
+  animation: cam-pulse 0.75s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
