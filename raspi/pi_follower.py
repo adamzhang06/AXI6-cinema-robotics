@@ -159,6 +159,9 @@ def execute_move(event_queue):
     Direction events set a GPIO pin immediately. Step events pulse the pin HIGH
     for PULSE_WIDTH seconds then pull it LOW, as required by the stepper drivers.
     """
+    GPIO.output(SLIDE_EN, GPIO.LOW)    # enable drivers before move starts
+    GPIO.output(PAN_EN,   GPIO.LOW)
+
     start = time.perf_counter()
 
     for event in event_queue:
@@ -179,6 +182,9 @@ def execute_move(event_queue):
             while time.perf_counter() < end:
                 pass
             GPIO.output(pin, GPIO.LOW)
+
+    GPIO.output(SLIDE_EN, GPIO.HIGH)   # disable drivers (active-LOW)
+    GPIO.output(PAN_EN,   GPIO.HIGH)
 
 
 # ── WebSocket Bridge ──────────────────────────────────────────────────────────
