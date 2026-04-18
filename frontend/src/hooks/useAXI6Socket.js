@@ -8,8 +8,14 @@ export function useAXI6Socket() {
 
   const sendMessage = useCallback((payload) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(payload));
+      try {
+        wsRef.current.send(JSON.stringify(payload));
+        return true;
+      } catch (err) {
+        return false;
+      }
     }
+    return false;
   }, []);
 
   useEffect(() => {

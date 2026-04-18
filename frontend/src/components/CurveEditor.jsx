@@ -376,9 +376,9 @@ function TrackSVG({
 
       initialWaypoints.forEach((wp, i) => {
         if (!dragFrames.includes(wp.frame)) return;
+        if (wp.frame === 0 || wp.frame === maxFrame) return;
         allowedMinDY = Math.max(allowedMinDY, 0 - wp.y);
         allowedMaxDY = Math.min(allowedMaxDY, laneHeight - wp.y);
-        if (wp.frame === 0 || wp.frame === maxFrame) return;
         let leftBound = 0;
         for (let j = i - 1; j >= 0; j--) {
           if (!dragFrames.includes(initialWaypoints[j].frame)) { leftBound = initialWaypoints[j].frame + 1; break; }
@@ -411,7 +411,7 @@ function TrackSVG({
       const newWaypoints = initialWaypoints.map((wp) => {
         if (!dragFrames.includes(wp.frame)) return wp;
         const isEndpt = wp.frame === 0 || wp.frame === maxFrame;
-        return { ...wp, frame: isEndpt ? wp.frame : wp.frame + finalDFrame, y: wp.y + finalDY };
+        return isEndpt ? wp : { ...wp, frame: wp.frame + finalDFrame, y: wp.y + finalDY };
       });
 
       const newSelectedFrames = initialWaypoints

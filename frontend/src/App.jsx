@@ -590,7 +590,8 @@ function Timeline({
   // Pause automatically when playhead hits a boundary.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (isPlaying === "forward" && currentFrame >= maxFrame) setIsPlaying("paused");
+    if (isPlaying === "forward" && currentFrame >= maxFrame)
+      setIsPlaying("paused");
     if (isPlaying === "reverse" && currentFrame <= 0) setIsPlaying("paused");
   }, [currentFrame, isPlaying, maxFrame]);
 
@@ -680,11 +681,15 @@ function Timeline({
     }
   };
 
-  const [saveStatus, setSaveStatus] = useState("unsaved"); // 'unsaved' | 'saved'
+  const [saveStatus, setSaveStatus] = useState("unsaved"); // 'unsaved' | 'saved' | 'error'
 
   const handleSave = () => {
-    sendMessage({ sender: "ui", command: "save_trajectory", test: true });
-    setSaveStatus("saved");
+    const success = sendMessage({ sender: "ui", command: "save_trajectory", test: true });
+    if (success) {
+      setSaveStatus("saved");
+    } else {
+      setSaveStatus("error");
+    }
   };
 
   const handleExecute = () => {
@@ -999,10 +1004,22 @@ function Timeline({
           <BarDivider className="ml-2" />
 
           {/* Save / Execute */}
-          <div className="flex items-center gap-1.5 ml-1">
-            <span className={`text-[10px] font-semibold whitespace-nowrap ${saveStatus === "saved" ? "text-green-400" : "text-[#FFD500]/70"}`}>
-              {saveStatus === "saved" ? "Saved" : "Unsaved Changes"}
-            </span>
+          <div className="flex items-center gap-1.5 ml-3">
+            <div
+              className={`flex items-center justify-center w-[110px] h-7 rounded border bg-[#252528] ${
+                saveStatus === "saved" ? "border-green-400/20" : 
+                saveStatus === "error" ? "border-red-500/30 bg-red-500/10" : "border-white/5"
+              }`}
+            >
+              <span
+                className={`text-[10px] font-bold tracking-wide whitespace-nowrap ${
+                  saveStatus === "saved" ? "text-green-400" : 
+                  saveStatus === "error" ? "text-red-500" : "text-[#FFD500]/70"
+                }`}
+              >
+                {saveStatus === "saved" ? "Saved" : saveStatus === "error" ? "Error" : "Unsaved Changes"}
+              </span>
+            </div>
             <button
               title="Save trajectory"
               onClick={handleSave}
@@ -1101,7 +1118,10 @@ function Timeline({
                 canvasWidth={canvasWidth}
                 isSnapping={isSnapping}
                 onSetActiveTrack={setActiveTrack}
-                onWaypointsChange={onWaypointsChange}
+                onWaypointsChange={(id, wps) => {
+                  setSaveStatus("unsaved");
+                  onWaypointsChange?.(id, wps);
+                }}
                 lockedTracks={lockedTracks}
                 hiddenTracks={hiddenTracks}
               />
@@ -1315,15 +1335,16 @@ function RightSidebar({
           <div className="w-px h-3 bg-white/[0.08] shrink-0" />
           {/* Backend — wired to connectionStatus */}
           <div className="flex items-center gap-[5px]">
-            <div className={`w-[7px] h-[7px] rounded-full shrink-0 transition-[background,box-shadow] duration-300 ${
-              connectionStatus === "connected"
-                ? "bg-green-500 shadow-[0_0_6px_#22c55e]"
-                : connectionStatus === "connecting"
-                  ? "bg-yellow-500"
-                  : "bg-[#555]"
-            }`} />
+            <div
+              className={`w-[7px] h-[7px] rounded-full shrink-0 transition-[background,box-shadow] duration-300 ${
+                connectionStatus === "connected"
+                  ? "bg-green-500 shadow-[0_0_6px_#22c55e]"
+                  : "bg-red-500 shadow-[0_0_6px_#ef4444]"
+              }`}
+            />
             <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
-              Backend: {connectionStatus === "connected" ? "OK" : connectionStatus === "connecting" ? "..." : "—"}
+              Backend:{" "}
+              {connectionStatus === "connected" ? "OK" : "OFF"}
             </span>
           </div>
         </div>
