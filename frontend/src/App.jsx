@@ -1,6 +1,34 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import "./index.css";
 import CurveEditor from "./components/CurveEditor";
+
+// ─────────────────────────────────────────────────────────────────
+// TIMECODE HELPERS
+// ─────────────────────────────────────────────────────────────────
+const CINEMATIC_FPS = 24;
+const TIMELINE_CANVAS_W = 6000; // must match CANVAS_WIDTH in CurveEditor
+const FALLBACK_DURATION_S = 10;
+
+function secsToTC(totalSecs, fps = CINEMATIC_FPS) {
+  const s  = Math.max(0, totalSecs);
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  const ss = Math.floor(s % 60);
+  const ff = Math.round((s % 1) * fps);
+  return [hh, mm, ss, ff].map((n) => String(Math.floor(n)).padStart(2, "0")).join(":");
+}
+
+function tcToSecs(tc, fps = CINEMATIC_FPS) {
+  const str = (tc ?? "").trim();
+  if (!str) return null;
+  const parts = str.split(":");
+  const nums  = parts.map(Number);
+  if (nums.some(isNaN) || nums.some((n) => n < 0)) return null;
+  if (parts.length === 4) { const [hh, mm, ss, ff] = nums; return hh * 3600 + mm * 60 + ss + ff / fps; }
+  if (parts.length === 3) { const [mm, ss, ff] = nums; return mm * 60 + ss + ff / fps; }
+  if (parts.length === 1) return nums[0];
+  return null;
+}
 
 // ─────────────────────────────────────────────────────────────────
 // SHARED MICRO-COMPONENTS
@@ -397,6 +425,53 @@ function Timeline() {
       return next;
     });
 
+  // ── Duration & scrubber state ─────────────────────────────────
+  const [durationS,    setDurationS]    = useState(FALLBACK_DURATION_S);
+  const [durationInput, setDurationInput] = useState(secsToTC(FALLBACK_DURATION_S));
+  const [currentFrame, setCurrentFrame] = useState(0);
+
+  const maxFrame   = durationS * CINEMATIC_FPS;
+  const frameToXTL = (frame) => (frame / maxFrame) * TIMELINE_CANVAS_W;
+
+  const canvasRef    = useRef(null); // the 6000 px-wide scrollable canvas div
+  const isScrubbing  = useRef(false);
+
+  // Clamp scrubber when duration shrinks.
+  useEffect(() => {
+    setCurrentFrame((prev) => Math.min(prev, maxFrame));
+  }, [maxFrame]);
+
+  const commitDuration = () => {
+    const parsed = tcToSecs(durationInput);
+    if (!parsed || parsed <= 0 || !isFinite(parsed)) {
+      setDurationS(FALLBACK_DURATION_S);
+      setDurationInput(secsToTC(FALLBACK_DURATION_S));
+    } else {
+      const clamped = Math.max(1, Math.min(3600, Math.round(parsed)));
+      setDurationS(clamped);
+      setDurationInput(secsToTC(clamped));
+    }
+  };
+
+  const handleScrubDown = (e) => {
+    e.stopPropagation();
+    try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+    isScrubbing.current = true;
+    if (canvasRef.current) {
+      const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
+      setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / TIMELINE_CANVAS_W) * maxFrame))));
+    }
+  };
+  const handleScrubMove = (e) => {
+    if (!isScrubbing.current || !canvasRef.current) return;
+    const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
+    setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / TIMELINE_CANVAS_W) * maxFrame))));
+  };
+  const handleScrubUp = (e) => {
+    try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
+    isScrubbing.current = false;
+  };
+
   return (
     <div className="flex flex-col gap-[2px] h-full overflow-hidden">
       {/* ── Split Header (48 px) ───────────────────────────────── */}
@@ -410,7 +485,10 @@ function Timeline() {
             </span>
             <input
               type="text"
-              defaultValue="00:02:00:00"
+              value={durationInput}
+              onChange={(e) => setDurationInput(e.target.value)}
+              onBlur={commitDuration}
+              onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
               autoComplete="off"
               spellCheck="false"
               className="bg-neutral-950 border border-white/5 rounded px-1.5 w-[80px] py-0.5
@@ -431,8 +509,8 @@ function Timeline() {
             style={{ fontFamily: "var(--font-mono)" }}
           >
             <span>FRAME:</span>
-            <span className="text-white/80 w-[24px] text-right">0</span>
-            <span>/ 3600</span>
+            <span className="text-white/80 w-[24px] text-right">{currentFrame}</span>
+            <span>/ {maxFrame}</span>
           </div>
 
           {/* Centred button row */}
@@ -692,7 +770,7 @@ function Timeline() {
                 className="text-[#FFD500] text-[12px] font-medium opacity-90 tracking-widest"
                 style={{ fontFamily: "var(--font-mono)" }}
               >
-                00:00:00:00
+                {secsToTC(currentFrame / CINEMATIC_FPS)}
               </span>
             </div>
           </div>
@@ -716,11 +794,15 @@ function Timeline() {
             to show the full timeline at any zoom level. The curve-editor will resize
             it dynamically once wired up.
           */}
-          <div className="relative h-full" style={{ width: "6000px" }}>
+          <div ref={canvasRef} className="relative h-full" style={{ width: "6000px" }}>
             {/* Timeline ruler (tick marks injected by JS in a later chunk) */}
             <div
               className="absolute top-0 left-0 right-0 h-[30px] z-20 overflow-hidden
                          border-b border-[#1B1B1D] bg-[#0a0a0c]/80 origin-top cursor-ew-resize"
+              onPointerDown={handleScrubDown}
+              onPointerMove={handleScrubMove}
+              onPointerUp={handleScrubUp}
+              onPointerCancel={handleScrubUp}
             />
 
             {/* Track lane area — sits below the 30 px ruler */}
@@ -728,17 +810,26 @@ function Timeline() {
               className="absolute left-0 right-0 flex flex-col z-10"
               style={{ top: 30, bottom: 0 }}
             >
-              <CurveEditor lockedTracks={lockedTracks} hiddenTracks={hiddenTracks} />
+              <CurveEditor
+                maxFrame={maxFrame}
+                onFrameChange={setCurrentFrame}
+                lockedTracks={lockedTracks}
+                hiddenTracks={hiddenTracks}
+              />
             </div>
 
             {/* Playhead (draggable red vertical line) */}
             <div
               className="absolute top-0 bottom-0 w-[2px] bg-red-600/70 z-30 pointer-events-none"
-              style={{ left: 0 }}
+              style={{ left: frameToXTL(currentFrame) }}
             >
               <div
                 className="absolute -top-px -left-[6px] w-[14px] h-[16px] bg-red-600
                               rounded-b-sm border-t border-red-400 pointer-events-auto cursor-ew-resize"
+                onPointerDown={handleScrubDown}
+                onPointerMove={handleScrubMove}
+                onPointerUp={handleScrubUp}
+                onPointerCancel={handleScrubUp}
               />
             </div>
           </div>
