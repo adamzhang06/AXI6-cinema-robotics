@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import "./index.css";
 import CurveEditor, { TimelineRuler } from "./components/CurveEditor";
+import { useAXI6Socket } from "./hooks/useAXI6Socket";
 
 // ─────────────────────────────────────────────────────────────────
 // TIMECODE HELPERS
@@ -456,6 +457,7 @@ function Timeline({
   setActiveTrack,
   curveEditorRef,
   onWaypointsChange,
+  sendMessage,
 }) {
   const tracks = TRACKS_INFO;
 
@@ -588,8 +590,7 @@ function Timeline({
   // Pause automatically when playhead hits a boundary.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (isPlaying === "forward" && currentFrame >= maxFrame)
-      setIsPlaying("paused");
+    if (isPlaying === "forward" && currentFrame >= maxFrame) setIsPlaying("paused");
     if (isPlaying === "reverse" && currentFrame <= 0) setIsPlaying("paused");
   }, [currentFrame, isPlaying, maxFrame]);
 
@@ -677,6 +678,17 @@ function Timeline({
       cancelAnimationFrame(scrubRaf.current);
       scrubRaf.current = null;
     }
+  };
+
+  const [saveStatus, setSaveStatus] = useState("unsaved"); // 'unsaved' | 'saved'
+
+  const handleSave = () => {
+    sendMessage({ sender: "ui", command: "save_trajectory", test: true });
+    setSaveStatus("saved");
+  };
+
+  const handleExecute = () => {
+    sendMessage({ sender: "ui", command: "execute_move" });
   };
 
   return (
@@ -986,25 +998,28 @@ function Timeline({
 
           <BarDivider className="ml-2" />
 
-          {/* Send mission to Pi */}
-          <PlaybackBtn
-            title="Send mission to Pi"
-            className="text-[#FFD500] hover:text-white hover:bg-[#FFD500]/20 ml-1"
-          >
-            <svg
-              className="w-4 h-4"
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          {/* Save / Execute */}
+          <div className="flex items-center gap-1.5 ml-1">
+            <span className={`text-[10px] font-semibold whitespace-nowrap ${saveStatus === "saved" ? "text-green-400" : "text-[#FFD500]/70"}`}>
+              {saveStatus === "saved" ? "Saved" : "Unsaved Changes"}
+            </span>
+            <button
+              title="Save trajectory"
+              onClick={handleSave}
+              className="h-7 px-2 text-[10px] font-bold tracking-wider rounded border border-white/20
+                         bg-neutral-900 hover:bg-white/10 text-white/70 hover:text-white transition-colors"
             >
-              <path d="M22 2 11 13" />
-              <path d="M22 2 15 22 11 13 2 9l20-7z" />
-            </svg>
-          </PlaybackBtn>
+              SAVE
+            </button>
+            <button
+              title="Execute move"
+              onClick={handleExecute}
+              className="h-7 px-2 text-[10px] font-bold tracking-wider rounded
+                         bg-[#FFD500] text-black hover:bg-[#FFD500]/80 transition-colors"
+            >
+              EXECUTE MOVE
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1122,6 +1137,7 @@ function RightSidebar({
   setCurrentFrame,
   curveEditorRef,
   waypointsByTrack,
+  connectionStatus,
 }) {
   const trackInfo = TRACKS_INFO.find((t) => t.id === activeTrack) ?? null;
   const activeWps = activeTrack ? (waypointsByTrack[activeTrack] ?? []) : [];
@@ -1286,19 +1302,30 @@ function RightSidebar({
       <div className="flex-1" />
 
       {/* Connection status indicators */}
-      <div className="flex gap-2 items-center flex-wrap pt-2 border-t border-white/[0.06]">
-        <div className="flex items-center gap-[5px]">
-          <div className="w-[7px] h-[7px] rounded-full bg-[#555] shrink-0 transition-[background,box-shadow] duration-300" />
-          <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
-            WS: —
-          </span>
-        </div>
-        <div className="w-px h-3 bg-white/[0.08] shrink-0" />
-        <div className="flex items-center gap-[5px]">
-          <div className="w-[7px] h-[7px] rounded-full bg-[#555] shrink-0 transition-[background,box-shadow] duration-300" />
-          <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
-            Server: —
-          </span>
+      <div className="pt-2 border-t border-white/[0.06]">
+        <span className="ctrl-label block mb-1.5">Websocket</span>
+        <div className="flex gap-2 items-center flex-wrap">
+          {/* Pi — inactive for now */}
+          <div className="flex items-center gap-[5px]">
+            <div className="w-[7px] h-[7px] rounded-full bg-[#555] shrink-0 transition-[background,box-shadow] duration-300" />
+            <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
+              Pi: —
+            </span>
+          </div>
+          <div className="w-px h-3 bg-white/[0.08] shrink-0" />
+          {/* Backend — wired to connectionStatus */}
+          <div className="flex items-center gap-[5px]">
+            <div className={`w-[7px] h-[7px] rounded-full shrink-0 transition-[background,box-shadow] duration-300 ${
+              connectionStatus === "connected"
+                ? "bg-green-500 shadow-[0_0_6px_#22c55e]"
+                : connectionStatus === "connecting"
+                  ? "bg-yellow-500"
+                  : "bg-[#555]"
+            }`} />
+            <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
+              Backend: {connectionStatus === "connected" ? "OK" : connectionStatus === "connecting" ? "..." : "—"}
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -1313,6 +1340,7 @@ export default function App() {
   const [currentFrame, setCurrentFrame] = useState(0);
   const [activeTrack, setActiveTrack] = useState(null);
   const [waypointsByTrack, setWaypointsByTrack] = useState({});
+  const { connectionStatus, sendMessage } = useAXI6Socket();
 
   const handleWaypointsChange = (trackId, waypoints) => {
     setWaypointsByTrack((prev) => ({ ...prev, [trackId]: waypoints }));
@@ -1339,6 +1367,7 @@ export default function App() {
             setActiveTrack={setActiveTrack}
             curveEditorRef={curveEditorRef}
             onWaypointsChange={handleWaypointsChange}
+            sendMessage={sendMessage}
           />
         </div>
 
@@ -1348,6 +1377,7 @@ export default function App() {
           setCurrentFrame={setCurrentFrame}
           curveEditorRef={curveEditorRef}
           waypointsByTrack={waypointsByTrack}
+          connectionStatus={connectionStatus}
         />
       </div>
     </div>

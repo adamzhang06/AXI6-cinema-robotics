@@ -2,42 +2,83 @@
 # To run this backend, use the command: uvicorn main:app --reload --port 8000
 ####
 
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-import asyncio
 
 app = FastAPI()
 
-# Allow React to talk to FastAPI (Cross-Origin Resource Sharing)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, change this to your React app's URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[str, WebSocket] = {}
+
+    async def connect(self, client_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[client_id] = websocket
+        print(f"[+] {client_id} connected  (active: {list(self.active_connections)})")
+
+    def disconnect(self, client_id: str):
+        self.active_connections.pop(client_id, None)
+        print(
+            f"[-] {client_id} disconnected  (active: {list(self.active_connections)})"
+        )
+
+    async def send_to(self, target_id: str, message: str):
+        ws = self.active_connections.get(target_id)
+        if ws:
+            await ws.send_text(message)
+
+
+manager = ConnectionManager()
+
+
 @app.get("/")
 def read_root():
-    return {"message": "FastAPI is running!"}
+    return {"message": "AXI6 backend running"}
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    print("React UI Connected to WebSocket!")
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    await manager.connect(client_id, websocket)
     try:
         while True:
-            # Wait for a message from the React frontend (e.g., joystick data)
-            data = await websocket.receive_text()
-            print(f"Received command: {data}")
+            raw = await websocket.receive_text()
 
-            # --- YOLO / Pi Logic Goes Here ---
-            # E.g., Process frame, send command to Pi via a different socket
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await manager.send_to(client_id, json.dumps({"error": "invalid JSON"}))
+                continue
 
-            # Send data back to React (e.g., bounding boxes or Pi telemetry)
-            await websocket.send_text(f"Backend processed command: {data}")
+            command = data.get("command", "")
+
+            if command == "save_trajectory":
+                print(f"\n🟢  TRAJECTORY SAVED: {data}\n")
+                await manager.send_to(
+                    client_id, json.dumps({"ack": "save_trajectory", "status": "ok"})
+                )
+
+            elif command == "execute_move":
+                print("\n🚀  EXECUTING MOVE...\n")
+                await manager.send_to(
+                    client_id, json.dumps({"ack": "execute_move", "status": "ok"})
+                )
+
+            else:
+                print(f"[{client_id}] unknown command: {data}")
+                await manager.send_to(
+                    client_id,
+                    json.dumps({"ack": command or "unknown", "status": "received"}),
+                )
 
     except WebSocketDisconnect:
-        print("React UI Disconnected")
+        manager.disconnect(client_id)
