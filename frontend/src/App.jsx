@@ -473,7 +473,8 @@ function Timeline() {
   const [durationS, setDurationS] = useState(FALLBACK_DURATION_S);
   const [durationInput, setDurationInput] = useState(`${FALLBACK_DURATION_S}s`);
   const [currentFrame, setCurrentFrame] = useState(0);
-  const [isPlaying, setIsPlaying] = useState("paused"); // 'forward' | 'reverse' | 'paused'
+  const [isPlaying,  setIsPlaying]  = useState("paused"); // 'forward' | 'reverse' | 'paused'
+  const [isSnapping, setIsSnapping] = useState(true);
 
   const viewportRef = useRef(null);
   const curveEditorRef = useRef(null);
@@ -619,6 +620,17 @@ function Timeline() {
     }
   };
 
+  const snapFrame = (rawFrame) => {
+    if (!isSnapping) return rawFrame;
+    const frames = curveEditorRef.current?.getAllWaypointFrames() ?? [];
+    let best = rawFrame, bestDist = 4 + 1; // SNAP_DEADZONE = 4
+    for (const f of frames) {
+      const d = Math.abs(f - rawFrame);
+      if (d < bestDist) { bestDist = d; best = f; }
+    }
+    return best;
+  };
+
   const handleScrubDown = (e) => {
     e.stopPropagation();
     try {
@@ -630,12 +642,8 @@ function Timeline() {
 
     if (canvasRef.current) {
       const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
-      setCurrentFrame(
-        Math.max(
-          0,
-          Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)),
-        ),
-      );
+      const raw = Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)));
+      setCurrentFrame(snapFrame(raw));
     }
   };
   const handleScrubMove = (e) => {
@@ -643,9 +651,8 @@ function Timeline() {
     scrubMouseX.current = e.clientX;
 
     const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
-    setCurrentFrame(
-      Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))),
-    );
+    const raw = Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)));
+    setCurrentFrame(snapFrame(raw));
   };
   const handleScrubUp = (e) => {
     try {
@@ -706,8 +713,8 @@ function Timeline() {
 
           {/* Centred button row */}
           <div className="flex items-center gap-1.5 p-0.5">
-            {/* Eraser */}
-            <PlaybackBtn title="Clear all waypoints">
+            {/* Eraser — resets primary track to two endpoints */}
+            <PlaybackBtn title="Clear all waypoints" onClick={() => curveEditorRef.current?.resetPrimaryTrack()}>
               <svg
                 className="w-4 h-4"
                 xmlns="http://www.w3.org/2000/svg"
@@ -725,7 +732,7 @@ function Timeline() {
             </PlaybackBtn>
 
             {/* Magnet snap */}
-            <PlaybackBtn title="Toggle waypoint snap">
+            <PlaybackBtn title="Toggle waypoint snap" active={isSnapping} onClick={() => setIsSnapping((v) => !v)}>
               <svg
                 className="w-4 h-4"
                 xmlns="http://www.w3.org/2000/svg"
@@ -1055,6 +1062,7 @@ function Timeline() {
                 ref={curveEditorRef}
                 maxFrame={maxFrame}
                 canvasWidth={canvasWidth}
+                isSnapping={isSnapping}
                 onFrameChange={setCurrentFrame}
                 lockedTracks={lockedTracks}
                 hiddenTracks={hiddenTracks}

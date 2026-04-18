@@ -176,6 +176,8 @@ export function TimelineRuler({ canvasWidth, maxFrame, onFrameChange }) {
 
 // ─── TrackSVG ────────────────────────────────────────────────────────────────
 
+const SNAP_DEADZONE = 4; // frames
+
 function TrackSVG({
   track,
   waypoints,
@@ -191,6 +193,7 @@ function TrackSVG({
   onMarqueeSelect,
   onClearSelection,
   onSetPrimary,
+  onSnapFrame, // (rawFrame) => snappedFrame — cross-track snap from parent
 }) {
   const svgRef          = useRef(null);
   const dragRef         = useRef(null);
@@ -386,8 +389,22 @@ function TrackSVG({
         allowedMaxDFrame = Math.min(allowedMaxDFrame, rightBound - wp.frame);
       });
 
-      const finalDFrame = Math.max(allowedMinDFrame, Math.min(allowedMaxDFrame, targetDFrame));
-      const finalDY     = Math.max(allowedMinDY,    Math.min(allowedMaxDY,    targetDY));
+      let finalDFrame = Math.max(allowedMinDFrame, Math.min(allowedMaxDFrame, targetDFrame));
+      const finalDY   = Math.max(allowedMinDY,    Math.min(allowedMaxDY,    targetDY));
+
+      // Snap single movable waypoint to a frame on another track
+      if (onSnapFrame) {
+        const movers = initialWaypoints.filter(
+          (wp) => dragFrames.includes(wp.frame) && wp.frame !== 0 && wp.frame !== maxFrame
+        );
+        if (movers.length === 1) {
+          const proposed = movers[0].frame + finalDFrame;
+          const snapped  = onSnapFrame(proposed);
+          if (snapped !== proposed) {
+            finalDFrame = Math.max(allowedMinDFrame, Math.min(allowedMaxDFrame, snapped - movers[0].frame));
+          }
+        }
+      }
 
       const newWaypoints = initialWaypoints.map((wp) => {
         if (!dragFrames.includes(wp.frame)) return wp;
@@ -588,6 +605,7 @@ function TrackSVG({
 const CurveEditor = forwardRef(function CurveEditor({
   maxFrame,
   canvasWidth = BASE_CANVAS_W,
+  isSnapping = true,
   lockedTracks,
   hiddenTracks,
 }, ref) {
@@ -689,33 +707,61 @@ const CurveEditor = forwardRef(function CurveEditor({
     }
   };
 
-  // ── Easing API exposed to parent via ref ──────────────────────────
+  // Returns snapped frame for a cross-track waypoint drag.
+  const getSnapFrame = (rawFrame, excludeTrackId) => {
+    if (!isSnapping) return rawFrame;
+    let best = rawFrame, bestDist = SNAP_DEADZONE + 1;
+    TRACKS.forEach((t) => {
+      if (t.id === excludeTrackId) return;
+      (trackData[t.id] || []).forEach((wp) => {
+        const d = Math.abs(wp.frame - rawFrame);
+        if (d < bestDist) { bestDist = d; best = wp.frame; }
+      });
+    });
+    return best;
+  };
+
+  // ── API exposed to parent via ref ─────────────────────────────────
 
   useImperativeHandle(ref, () => ({
     applyEasing(type, allOnTrack) {
       if (!primarySelection) return;
       const { trackId } = primarySelection;
-
       setTrackData((current) => {
         const wps = current[trackId];
         if (!wps) return current;
-
         let frames;
         if (allOnTrack) {
           frames = type === "linear"
             ? wps.map((wp) => wp.frame)
             : wps.filter((wp) => wp.frame !== 0 && wp.frame !== maxFrame).map((wp) => wp.frame);
         } else {
-          const selFrames = selectedWaypoints
-            .filter((s) => s.trackId === trackId)
-            .map((s) => s.frame);
+          const selFrames = selectedWaypoints.filter((s) => s.trackId === trackId).map((s) => s.frame);
           frames = selFrames.length > 0 ? selFrames : [primarySelection.frame];
         }
-
         return { ...current, [trackId]: applyEasingToWaypoints(wps, frames, type) };
       });
     },
-  }), [primarySelection, selectedWaypoints, maxFrame]);
+
+    getAllWaypointFrames() {
+      const frames = new Set();
+      Object.values(trackData).forEach((wps) => wps.forEach((wp) => frames.add(wp.frame)));
+      return [...frames].sort((a, b) => a - b);
+    },
+
+    resetPrimaryTrack() {
+      if (!primarySelection) return;
+      const { trackId } = primarySelection;
+      setTrackData((current) => {
+        const wps = current[trackId];
+        if (!wps) return current;
+        const start = wps.find((wp) => wp.frame === 0);
+        const end   = wps.find((wp) => wp.frame === maxFrame);
+        return { ...current, [trackId]: [start, end].filter(Boolean) };
+      });
+      setSelectedWaypoints((prev) => prev.filter((s) => s.trackId !== primarySelection.trackId));
+    },
+  }), [primarySelection, selectedWaypoints, maxFrame, trackData]);
 
   // ── Render ────────────────────────────────────────────────────────
 
@@ -753,6 +799,7 @@ const CurveEditor = forwardRef(function CurveEditor({
               onMarqueeSelect={handleMarqueeSelect}
               onClearSelection={clearSelection}
               onSetPrimary={(frame) => handleSetPrimary(track.id, frame)}
+              onSnapFrame={(rawFrame) => getSnapFrame(rawFrame, track.id)}
             />
           </div>
         );
