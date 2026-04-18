@@ -10,22 +10,30 @@ const BASE_CANVAS_W = 6000;
 const FALLBACK_DURATION_S = 10;
 
 function secsToTC(totalSecs, fps = CINEMATIC_FPS) {
-  const s  = Math.max(0, totalSecs);
+  const s = Math.max(0, totalSecs);
   const hh = Math.floor(s / 3600);
   const mm = Math.floor((s % 3600) / 60);
   const ss = Math.floor(s % 60);
   const ff = Math.round((s % 1) * fps);
-  return [hh, mm, ss, ff].map((n) => String(Math.floor(n)).padStart(2, "0")).join(":");
+  return [hh, mm, ss, ff]
+    .map((n) => String(Math.floor(n)).padStart(2, "0"))
+    .join(":");
 }
 
 function tcToSecs(tc, fps = CINEMATIC_FPS) {
   const str = (tc ?? "").trim();
   if (!str) return null;
   const parts = str.split(":");
-  const nums  = parts.map(Number);
+  const nums = parts.map(Number);
   if (nums.some(isNaN) || nums.some((n) => n < 0)) return null;
-  if (parts.length === 4) { const [hh, mm, ss, ff] = nums; return hh * 3600 + mm * 60 + ss + ff / fps; }
-  if (parts.length === 3) { const [mm, ss, ff] = nums; return mm * 60 + ss + ff / fps; }
+  if (parts.length === 4) {
+    const [hh, mm, ss, ff] = nums;
+    return hh * 3600 + mm * 60 + ss + ff / fps;
+  }
+  if (parts.length === 3) {
+    const [mm, ss, ff] = nums;
+    return mm * 60 + ss + ff / fps;
+  }
   if (parts.length === 1) return nums[0];
   return null;
 }
@@ -35,7 +43,13 @@ function tcToSecs(tc, fps = CINEMATIC_FPS) {
 // ─────────────────────────────────────────────────────────────────
 
 /** Icon button used in the playback bar. */
-function PlaybackBtn({ title, className = "", onClick, active = false, children }) {
+function PlaybackBtn({
+  title,
+  className = "",
+  onClick,
+  active = false,
+  children,
+}) {
   return (
     <button
       className={`playback-btn ${active ? "!bg-white/15 !text-white" : ""} ${className}`}
@@ -333,7 +347,15 @@ function Viewport() {
 // ─────────────────────────────────────────────────────────────────
 
 /** One track label row (Slide / Pan / Tilt) in the left labels panel. */
-function TrackBlock({ id, name, color, isHidden, isLocked, onToggleHide, onToggleLock }) {
+function TrackBlock({
+  id,
+  name,
+  color,
+  isHidden,
+  isLocked,
+  onToggleHide,
+  onToggleLock,
+}) {
   return (
     <div
       className={`track-block flex-1${isLocked ? " opacity-60" : ""}`}
@@ -353,8 +375,17 @@ function TrackBlock({ id, name, color, isHidden, isLocked, onToggleHide, onToggl
             }`}
             title={isHidden ? "Show Track" : "Hide Track"}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-              fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               {isHidden ? (
                 // Eye-off (slashed eye)
                 <>
@@ -381,8 +412,17 @@ function TrackBlock({ id, name, color, isHidden, isLocked, onToggleHide, onToggl
             }`}
             title={isLocked ? "Unlock Track" : "Lock Track"}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24"
-              fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
               {isLocked ? (
                 // Closed shackle
@@ -415,8 +455,8 @@ function TrackBlock({ id, name, color, isHidden, isLocked, onToggleHide, onToggl
 function Timeline() {
   const tracks = [
     { id: "slide", name: "Slide", color: "#3993DD" },
-    { id: "pan",   name: "Pan",   color: "#ff4444" },
-    { id: "tilt",  name: "Tilt",  color: "#44ff44" },
+    { id: "pan", name: "Pan", color: "#ff4444" },
+    { id: "tilt", name: "Tilt", color: "#44ff44" },
   ];
 
   const [lockedTracks, setLockedTracks] = useState(new Set());
@@ -430,12 +470,13 @@ function Timeline() {
     });
 
   // ── Duration & scrubber state ─────────────────────────────────
-  const [durationS,    setDurationS]    = useState(FALLBACK_DURATION_S);
+  const [durationS, setDurationS] = useState(FALLBACK_DURATION_S);
   const [durationInput, setDurationInput] = useState(`${FALLBACK_DURATION_S}s`);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [isPlaying, setIsPlaying] = useState("paused"); // 'forward' | 'reverse' | 'paused'
 
   const viewportRef = useRef(null);
+  const curveEditorRef = useRef(null);
   const [viewportWidth, setViewportWidth] = useState(1000); // fallback
 
   useEffect(() => {
@@ -450,23 +491,24 @@ function Timeline() {
   }, []);
 
   const [zoomSlider, setZoomSlider] = useState(50); // 0 to 100
-  
+
   // canvasWidth calculation
   // Min width = viewportWidth (fits full timeline in view)
   // Max width = viewportWidth * durationS (1s takes up full viewport)
   const minWidth = viewportWidth;
   const maxWidth = Math.max(viewportWidth, viewportWidth * durationS);
-  const canvasWidth = minWidth * Math.pow(maxWidth / minWidth, zoomSlider / 100);
+  const canvasWidth =
+    minWidth * Math.pow(maxWidth / minWidth, zoomSlider / 100);
 
-  const maxFrame   = durationS * CINEMATIC_FPS;
+  const maxFrame = durationS * CINEMATIC_FPS;
   const frameToXTL = (frame) => (frame / maxFrame) * canvasWidth;
 
-  const canvasRef    = useRef(null); // the scrollable canvas div
-  const isScrubbing  = useRef(false);
-  const rafRef       = useRef(null);
-  const lastTimeRef  = useRef(null);
-  const scrubMouseX  = useRef(null);
-  const scrubRaf     = useRef(null);
+  const canvasRef = useRef(null); // the scrollable canvas div
+  const isScrubbing = useRef(false);
+  const rafRef = useRef(null);
+  const lastTimeRef = useRef(null);
+  const scrubMouseX = useRef(null);
+  const scrubRaf = useRef(null);
 
   const startAutoScroll = () => {
     if (scrubRaf.current) return;
@@ -480,22 +522,31 @@ function Timeline() {
         const EDGE = 100;
         let scrolled = false;
         let speed = 0;
-        
+
         if (scrubMouseX.current < rect.left + EDGE) {
-          const intensity = 1 - Math.max(0, scrubMouseX.current - rect.left) / EDGE;
+          const intensity =
+            1 - Math.max(0, scrubMouseX.current - rect.left) / EDGE;
           speed = -15 - intensity * 25;
           viewportRef.current.scrollLeft += speed;
           scrolled = true;
         } else if (scrubMouseX.current > rect.right - EDGE) {
-          const intensity = 1 - Math.max(0, rect.right - scrubMouseX.current) / EDGE;
+          const intensity =
+            1 - Math.max(0, rect.right - scrubMouseX.current) / EDGE;
           speed = 15 + intensity * 25;
           viewportRef.current.scrollLeft += speed;
           scrolled = true;
         }
-        
+
         if (scrolled) {
-          const x = scrubMouseX.current - canvasRef.current.getBoundingClientRect().left;
-          setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))));
+          const x =
+            scrubMouseX.current -
+            canvasRef.current.getBoundingClientRect().left;
+          setCurrentFrame(
+            Math.max(
+              0,
+              Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)),
+            ),
+          );
         }
       }
       scrubRaf.current = requestAnimationFrame(loop);
@@ -523,17 +574,22 @@ function Timeline() {
       if (elapsed >= frameMs) {
         const steps = Math.floor(elapsed / frameMs);
         lastTimeRef.current += steps * frameMs;
-        setCurrentFrame((prev) => Math.max(0, Math.min(maxFrame, prev + dir * steps)));
+        setCurrentFrame((prev) =>
+          Math.max(0, Math.min(maxFrame, prev + dir * steps)),
+        );
       }
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
   }, [isPlaying, maxFrame]);
 
   // Pause automatically when playhead hits a boundary.
   useEffect(() => {
-    if (isPlaying === "forward" && currentFrame >= maxFrame) setIsPlaying("paused");
+    if (isPlaying === "forward" && currentFrame >= maxFrame)
+      setIsPlaying("paused");
     if (isPlaying === "reverse" && currentFrame <= 0) setIsPlaying("paused");
   }, [currentFrame, isPlaying, maxFrame]);
 
@@ -552,7 +608,7 @@ function Timeline() {
   const commitDuration = () => {
     const rawDigits = durationInput.replace(/\D/g, "");
     const parsed = parseInt(rawDigits, 10);
-    
+
     if (isNaN(parsed) || parsed <= 0) {
       setDurationS(FALLBACK_DURATION_S);
       setDurationInput(`${FALLBACK_DURATION_S}s`);
@@ -565,25 +621,36 @@ function Timeline() {
 
   const handleScrubDown = (e) => {
     e.stopPropagation();
-    try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+    try {
+      e.target.setPointerCapture(e.pointerId);
+    } catch (_) {}
     isScrubbing.current = true;
     scrubMouseX.current = e.clientX;
     startAutoScroll();
 
     if (canvasRef.current) {
       const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
-      setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))));
+      setCurrentFrame(
+        Math.max(
+          0,
+          Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)),
+        ),
+      );
     }
   };
   const handleScrubMove = (e) => {
     if (!isScrubbing.current || !canvasRef.current) return;
     scrubMouseX.current = e.clientX;
-    
+
     const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
-    setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))));
+    setCurrentFrame(
+      Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))),
+    );
   };
   const handleScrubUp = (e) => {
-    try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
+    try {
+      e.target.releasePointerCapture(e.pointerId);
+    } catch (_) {}
     isScrubbing.current = false;
     scrubMouseX.current = null;
     if (scrubRaf.current) {
@@ -608,7 +675,9 @@ function Timeline() {
               value={durationInput}
               onChange={(e) => setDurationInput(e.target.value)}
               onBlur={commitDuration}
-              onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.target.blur();
+              }}
               autoComplete="off"
               spellCheck="false"
               className="bg-neutral-950 border border-white/5 rounded px-1.5 w-[80px] py-0.5
@@ -629,7 +698,9 @@ function Timeline() {
             style={{ fontFamily: "var(--font-mono)" }}
           >
             <span>FRAME:</span>
-            <span className="text-white/80 w-[24px] text-right">{currentFrame}</span>
+            <span className="text-white/80 w-[24px] text-right">
+              {currentFrame}
+            </span>
             <span>/ {maxFrame}</span>
           </div>
 
@@ -674,40 +745,60 @@ function Timeline() {
             <BarDivider />
 
             {/* Skip left */}
-            <PlaybackBtn title="Skip to start" onClick={() => { 
-              setCurrentFrame(0); 
-              setIsPlaying("paused"); 
-              if (viewportRef.current) viewportRef.current.scrollLeft = 0;
-            }}>
+            <PlaybackBtn
+              title="Skip to start"
+              onClick={() => {
+                setCurrentFrame(0);
+                setIsPlaying("paused");
+                if (viewportRef.current) viewportRef.current.scrollLeft = 0;
+              }}
+            >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M18 5.5v13L8 12l10-6.5z" />
                 <path d="M6 5.5h2v13H6v-13z" />
               </svg>
             </PlaybackBtn>
             {/* Play left */}
-            <PlaybackBtn title="Play backward" active={isPlaying === "reverse"} onClick={() => setIsPlaying("reverse")}>
+            <PlaybackBtn
+              title="Play backward"
+              active={isPlaying === "reverse"}
+              onClick={() => setIsPlaying("reverse")}
+            >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M18 5.5v13L8 12l10-6.5z" />
               </svg>
             </PlaybackBtn>
             {/* Pause */}
-            <PlaybackBtn title="Pause" active={isPlaying === "paused"} onClick={() => setIsPlaying("paused")}>
+            <PlaybackBtn
+              title="Pause"
+              active={isPlaying === "paused"}
+              onClick={() => setIsPlaying("paused")}
+            >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 5.5h4v13H6v-13zm8 0h4v13h-4v-13z" />
               </svg>
             </PlaybackBtn>
             {/* Play right */}
-            <PlaybackBtn title="Play forward" active={isPlaying === "forward"} onClick={() => setIsPlaying("forward")}>
+            <PlaybackBtn
+              title="Play forward"
+              active={isPlaying === "forward"}
+              onClick={() => setIsPlaying("forward")}
+            >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 5.5v13L16 12 6 5.5z" />
               </svg>
             </PlaybackBtn>
             {/* Skip right */}
-            <PlaybackBtn title="Skip to end" onClick={() => { 
-              setCurrentFrame(maxFrame); 
-              setIsPlaying("paused"); 
-              if (viewportRef.current) viewportRef.current.scrollLeft = viewportRef.current.scrollWidth;
-            }}>
+            <PlaybackBtn
+              title="Skip to end"
+              onClick={() => {
+                setCurrentFrame(maxFrame);
+                setIsPlaying("paused");
+                if (viewportRef.current)
+                  viewportRef.current.scrollLeft =
+                    viewportRef.current.scrollWidth;
+              }}
+            >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 5.5v13L16 12 6 5.5z" />
                 <path d="M16 5.5h2v13h-2v-13z" />
@@ -768,11 +859,12 @@ function Timeline() {
 
             <BarDivider className="ml-2" />
 
-            {/* Bezier easing tools — greyed out until a waypoint is selected */}
-            <div className="flex items-center gap-1.5 ml-2 opacity-30 pointer-events-none transition-opacity duration-300">
+            {/* Bezier easing tools */}
+            <div className="flex items-center gap-1.5 ml-2 transition-opacity duration-300">
               {[
                 {
                   title: "Ease out (add right handle)",
+                  type: "ease-out",
                   icon: (
                     <>
                       <path d="M6 18C12 18 18 12 18 6" />
@@ -789,6 +881,7 @@ function Timeline() {
                 },
                 {
                   title: "Ease both (symmetric handles)",
+                  type: "ease-both",
                   icon: (
                     <>
                       <path d="M4 16C8 10 16 10 20 16" />
@@ -805,6 +898,7 @@ function Timeline() {
                 },
                 {
                   title: "Ease in (add left handle)",
+                  type: "ease-in",
                   icon: (
                     <>
                       <path d="M6 6C6 12 12 18 18 18" />
@@ -821,6 +915,7 @@ function Timeline() {
                 },
                 {
                   title: "Linear (remove handles)",
+                  type: "linear",
                   icon: (
                     <>
                       <line x1="6" y1="18" x2="18" y2="6" />
@@ -835,10 +930,13 @@ function Timeline() {
                     </>
                   ),
                 },
-              ].map(({ title, icon }) => (
+              ].map(({ title, type, icon }) => (
                 <button
                   key={title}
                   title={title}
+                  onClick={(e) =>
+                    curveEditorRef.current?.applyEasing(type, e.shiftKey)
+                  }
                   className="w-7 h-7 flex items-center justify-center rounded border border-white/20
                              bg-neutral-900 hover:bg-white/10 text-white transition-colors"
                 >
@@ -918,13 +1016,20 @@ function Timeline() {
         </div>
 
         {/* Scrollable SVG canvas */}
-        <div ref={viewportRef} className="bg-[#0a0a0c] relative overflow-x-auto no-scrollbar min-w-0">
+        <div
+          ref={viewportRef}
+          className="bg-[#0a0a0c] relative overflow-x-auto no-scrollbar min-w-0"
+        >
           {/*
             This div is the scrollable content area. Its width is set wide enough
             to show the full timeline at any zoom level. The curve-editor will resize
             it dynamically once wired up.
           */}
-          <div ref={canvasRef} className="relative h-full" style={{ width: canvasWidth }}>
+          <div
+            ref={canvasRef}
+            className="relative h-full"
+            style={{ width: canvasWidth }}
+          >
             {/* Timeline ruler (tick marks injected by JS in a later chunk) */}
             <div
               className="absolute top-0 left-0 right-0 h-[30px] z-20 overflow-hidden
@@ -934,7 +1039,11 @@ function Timeline() {
               onPointerUp={handleScrubUp}
               onPointerCancel={handleScrubUp}
             >
-              <TimelineRuler canvasWidth={canvasWidth} maxFrame={maxFrame} onFrameChange={setCurrentFrame} />
+              <TimelineRuler
+                canvasWidth={canvasWidth}
+                maxFrame={maxFrame}
+                onFrameChange={setCurrentFrame}
+              />
             </div>
 
             {/* Track lane area — sits below the 30 px ruler */}
@@ -943,6 +1052,7 @@ function Timeline() {
               style={{ top: 30, bottom: 0 }}
             >
               <CurveEditor
+                ref={curveEditorRef}
                 maxFrame={maxFrame}
                 canvasWidth={canvasWidth}
                 onFrameChange={setCurrentFrame}
