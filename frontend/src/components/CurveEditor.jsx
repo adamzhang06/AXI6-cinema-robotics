@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 
-export const CINEMATIC_FPS = 24; // exported so App.jsx can share the constant
-const CANVAS_WIDTH = 6000;
+export const CINEMATIC_FPS = 24;
+const BASE_CANVAS_W = 6000; // unzoomed width; scaled by zoomLevel in the parent
 const DIAMOND_R = 5;
 const HIT_R = DIAMOND_R + 4;
 const MARQUEE_THRESHOLD = 4;
+const RULER_H = 30; // must match h-[30px] ruler container in App.jsx
 
 const TRACKS = [
   { id: "slide", name: "Slide", color: "#3993DD", max: 28, min: 0, unit: "in" },
@@ -12,7 +13,6 @@ const TRACKS = [
   { id: "tilt", name: "Tilt", color: "#44ff44", max: 45, min: -45, unit: "°" },
 ];
 
-// maxFrame is now a runtime parameter — no module-level constant.
 function makeDefaultWaypoints(track, laneHeight, maxFrame) {
   const zeroY = (track.max / (track.max - track.min)) * laneHeight;
   return [
@@ -21,10 +21,10 @@ function makeDefaultWaypoints(track, laneHeight, maxFrame) {
   ];
 }
 
-function buildPathD(waypoints, maxFrame) {
+function buildPathD(waypoints, maxFrame, canvasWidth) {
   if (waypoints.length < 2) return "";
-  const ftx = (f) => (f / maxFrame) * CANVAS_WIDTH;
-  const pxPerFrame = CANVAS_WIDTH / maxFrame;
+  const ftx = (f) => (f / maxFrame) * canvasWidth;
+  const pxPerFrame = canvasWidth / maxFrame;
   const pts = waypoints.map((wp) => ({
     x: ftx(wp.frame),
     y: wp.y,
@@ -48,6 +48,139 @@ function buildPathD(waypoints, maxFrame) {
   return d;
 }
 
+// ─── TimelineRuler ────────────────────────────────────────────────────────────
+
+function computeRulerTicks(canvasWidth, maxFrame) {
+  const durationS = maxFrame / CINEMATIC_FPS;
+  const pxPerSec = canvasWidth / durationS;
+  const pxPerFrame = canvasWidth / maxFrame;
+
+  // Choose the coarsest "nice" second interval where major ticks are ≥ 60 px apart.
+  const SEC_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+  const majorSec = SEC_STEPS.find((s) => pxPerSec * s >= 60) ?? 600;
+
+  // Show minor frame ticks only when there is enough room.
+  let minorFrameStep = null;
+  if (pxPerFrame >= 30) minorFrameStep = 1;
+  else if (pxPerFrame >= 15) minorFrameStep = 2;
+  else if (pxPerFrame >= 8) minorFrameStep = 4;
+  else if (pxPerFrame >= 4) minorFrameStep = 6;
+
+  return { majorSec, minorFrameStep, durationS };
+}
+
+function fmtSec(s) {
+  if (s === 0) return "0";
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r === 0 ? `${m}m` : `${m}:${String(r).padStart(2, "0")}`;
+}
+
+export function TimelineRuler({ canvasWidth, maxFrame, onFrameChange }) {
+  const svgRef = useRef(null);
+  const { majorSec, minorFrameStep, durationS } = computeRulerTicks(
+    canvasWidth,
+    maxFrame,
+  );
+
+  // Build major ticks (at whole-second boundaries).
+  const majorTicks = [];
+  for (let s = 0; s <= durationS + 0.001; s += majorSec) {
+    const frame = Math.round(s * CINEMATIC_FPS);
+    if (frame > maxFrame) break;
+    majorTicks.push({
+      x: (frame / maxFrame) * canvasWidth,
+      label: fmtSec(Math.round(s)),
+    });
+  }
+
+  // Build minor frame ticks (skipping positions already covered by major ticks).
+  const minorTicks = [];
+  if (minorFrameStep) {
+    for (let f = 0; f <= maxFrame; f += minorFrameStep) {
+      const s = f / CINEMATIC_FPS;
+      // Skip if this frame aligns with a major tick.
+      if (
+        Math.abs(s % majorSec) < 0.001 ||
+        Math.abs((s % majorSec) - majorSec) < 0.001
+      )
+        continue;
+      minorTicks.push({ x: (f / maxFrame) * canvasWidth });
+    }
+  }
+
+  const handleClick = (e) => {
+    if (!svgRef.current) return;
+    const x = e.clientX - svgRef.current.getBoundingClientRect().left;
+    const frame = Math.max(
+      0,
+      Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame)),
+    );
+    onFrameChange?.(frame);
+  };
+
+  return (
+    <svg
+      ref={svgRef}
+      width={canvasWidth}
+      height={RULER_H}
+      style={{ display: "block", cursor: "ew-resize" }}
+      onClick={handleClick}
+    >
+      {/* Baseline */}
+      <line
+        x1={0}
+        y1={RULER_H - 1}
+        x2={canvasWidth}
+        y2={RULER_H - 1}
+        stroke="rgba(255,255,255,0.08)"
+        strokeWidth={1}
+      />
+
+      {/* Minor frame ticks */}
+      {minorTicks.map(({ x }, i) => (
+        <line
+          key={`m${i}`}
+          x1={x}
+          y1={RULER_H - 6}
+          x2={x}
+          y2={RULER_H - 1}
+          stroke="rgba(255,255,255,0.18)"
+          strokeWidth={1}
+          style={{ pointerEvents: "none" }}
+        />
+      ))}
+
+      {/* Major second ticks + labels */}
+      {majorTicks.map(({ x, label }, i) => (
+        <g key={`M${i}`} style={{ pointerEvents: "none" }}>
+          <line
+            x1={x}
+            y1={RULER_H - 14}
+            x2={x}
+            y2={RULER_H - 1}
+            stroke="rgba(255,255,255,0.4)"
+            strokeWidth={1}
+          />
+          <text
+            x={i === 0 ? x + 4 : x - 4}
+            y={RULER_H - 17}
+            fontSize={9}
+            fill="rgba(255,255,255,0.4)"
+            fontFamily="monospace"
+            fontWeight="600"
+            textAnchor={i === 0 ? "start" : "end"}
+            style={{ userSelect: "none" }}
+          >
+            {label}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
 // ─── TrackSVG ────────────────────────────────────────────────────────────────
 
 function TrackSVG({
@@ -55,6 +188,7 @@ function TrackSVG({
   waypoints,
   laneHeight,
   maxFrame,
+  canvasWidth,
   isLocked,
   isHidden,
   selectedWaypoints, // Array<{ trackId, frame }> — pre-filtered to this track
@@ -62,21 +196,21 @@ function TrackSVG({
   onToggleWaypoint, // ({ trackId, frame }) → void
   onMarqueeSelect, // (Array<{ trackId, frame }>, replace: boolean) → void
   onClearSelection, // () → void
-  onFrameChange, // (frame: number) → void
+  onFrameChange, // (frame: number) → void  (kept for future use)
 }) {
   const svgRef = useRef(null);
   const dragRef = useRef(null);
-  const marqueeStartRef = useRef(null); // { x, y, isShift } | null
+  const marqueeStartRef = useRef(null); // { x, y } | null
 
   const [isDragging, setIsDragging] = useState(false);
   const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } | null
 
   const { color, max, min, unit } = track;
 
-  // Local frameToX closes over the current maxFrame prop.
-  const ftx = (frame) => (frame / maxFrame) * CANVAS_WIDTH;
+  // All pixel math uses the dynamic canvasWidth prop.
+  const ftx = (frame) => (frame / maxFrame) * canvasWidth;
   const zeroY = (max / (max - min)) * laneHeight;
-  const pathD = buildPathD(waypoints, maxFrame);
+  const pathD = buildPathD(waypoints, maxFrame, canvasWidth);
 
   const pathColor = isHidden ? "rgba(100,100,100,0.3)" : color;
   const wpColor = isLocked ? "#888888" : pathColor;
@@ -138,11 +272,8 @@ function TrackSVG({
         e.preventDefault();
       }
     } else {
-      // Empty space: clear selection (unless shift).
-      if (!e.shiftKey) {
-        onClearSelection();
-      }
-      marqueeStartRef.current = { x, y, isShift: e.shiftKey };
+      if (!e.shiftKey) onClearSelection();
+      marqueeStartRef.current = { x, y };
     }
   };
 
@@ -159,7 +290,7 @@ function TrackSVG({
       }
       if (!dragRef.current.hasDragged) return;
 
-      const rawFrame = Math.round((x / CANVAS_WIDTH) * maxFrame);
+      const rawFrame = Math.round((x / canvasWidth) * maxFrame);
       const targetDFrame = rawFrame - initialWaypoints[idx].frame;
       const targetDY = y - startY;
 
@@ -218,9 +349,9 @@ function TrackSVG({
 
       onUpdateWaypoints(newWaypoints, newSelectedFrames);
     } else if (marqueeStartRef.current) {
+      // ── Marquee draw ──
       const { x, y } = svgCoords(e);
       const { x: x0, y: y0 } = marqueeStartRef.current;
-
       if (Math.hypot(x - x0, y - y0) > MARQUEE_THRESHOLD) {
         setMarquee({ x0, y0, x1: x, y1: y });
       }
@@ -233,7 +364,6 @@ function TrackSVG({
     } catch (_) {}
 
     if (dragRef.current) {
-      // If no drag happened and it was already selected, narrow selection to just this one.
       if (
         !dragRef.current.hasDragged &&
         dragRef.current.wasAlreadySelected &&
@@ -246,7 +376,6 @@ function TrackSVG({
       setIsDragging(false);
     } else if (marqueeStartRef.current) {
       if (marquee) {
-        // Finalise marquee selection.
         const minX = Math.min(marquee.x0, marquee.x1);
         const maxX = Math.max(marquee.x0, marquee.x1);
         const minY = Math.min(marquee.y0, marquee.y1);
@@ -280,7 +409,7 @@ function TrackSVG({
     if (hitTest(x, y) !== -1) return;
     const frame = Math.max(
       1,
-      Math.min(maxFrame - 1, Math.round((x / CANVAS_WIDTH) * maxFrame)),
+      Math.min(maxFrame - 1, Math.round((x / canvasWidth) * maxFrame)),
     );
     const newY = Math.max(0, Math.min(laneHeight, y));
     onUpdateWaypoints(
@@ -307,7 +436,7 @@ function TrackSVG({
     <svg
       ref={svgRef}
       className="absolute inset-0 z-10"
-      width={CANVAS_WIDTH}
+      width={canvasWidth}
       height={laneHeight}
       style={{
         overflow: "visible",
@@ -325,7 +454,7 @@ function TrackSVG({
       <line
         x1={0}
         y1={zeroY}
-        x2={CANVAS_WIDTH}
+        x2={canvasWidth}
         y2={zeroY}
         stroke={isHidden ? "rgba(100,100,100,0.15)" : "rgba(255,255,255,0.12)"}
         strokeWidth={1}
@@ -359,7 +488,7 @@ function TrackSVG({
         {unit}
       </text>
 
-      {/* Curve path — non-interactive so clicks pass through to the SVG background */}
+      {/* Curve path */}
       {pathD && (
         <path
           d={pathD}
@@ -423,8 +552,9 @@ function TrackSVG({
 // ─── CurveEditor (root) ───────────────────────────────────────────────────────
 
 export default function CurveEditor({
-  maxFrame, // durationS * CINEMATIC_FPS, owned by parent
-  onFrameChange, // (frame: number) → void
+  maxFrame,
+  canvasWidth = BASE_CANVAS_W, // scaled by zoomLevel in parent
+  onFrameChange,
   lockedTracks,
   hiddenTracks,
 }) {
@@ -433,7 +563,6 @@ export default function CurveEditor({
   const ref2 = useRef(null);
   const laneRefs = [ref0, ref1, ref2];
 
-  // Track the previous maxFrame so we can migrate endpoint waypoints when duration changes.
   const prevMaxFrameRef = useRef(maxFrame);
 
   const [laneHeights, setLaneHeights] = useState([100, 100, 100]);
@@ -442,7 +571,7 @@ export default function CurveEditor({
       TRACKS.map((t) => [t.id, makeDefaultWaypoints(t, 100, maxFrame)]),
     ),
   );
-  const [selectedWaypoints, setSelectedWaypoints] = useState([]); // Array<{ trackId, frame }>
+  const [selectedWaypoints, setSelectedWaypoints] = useState([]);
 
   // Measure actual lane heights after mount.
   useEffect(() => {
@@ -459,7 +588,7 @@ export default function CurveEditor({
     prevMaxFrameRef.current = maxFrame;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When duration changes, migrate endpoint frames and clamp interior waypoints.
+  // Migrate endpoint waypoints when duration changes.
   useEffect(() => {
     const prev = prevMaxFrameRef.current;
     if (prev === maxFrame) return;
@@ -471,8 +600,8 @@ export default function CurveEditor({
           const seen = new Set();
           const updated = wps
             .map((wp) => {
-              if (wp.frame === prev) return { ...wp, frame: maxFrame }; // move right endpoint
-              if (wp.frame > maxFrame) return { ...wp, frame: maxFrame - 1 }; // clamp interior
+              if (wp.frame === prev) return { ...wp, frame: maxFrame };
+              if (wp.frame > maxFrame) return { ...wp, frame: maxFrame - 1 };
               return wp;
             })
             .sort((a, b) => a.frame - b.frame)
@@ -569,6 +698,7 @@ export default function CurveEditor({
               waypoints={trackData[track.id]}
               laneHeight={laneHeights[i]}
               maxFrame={maxFrame}
+              canvasWidth={canvasWidth}
               isLocked={isLocked}
               isHidden={isHidden}
               selectedWaypoints={trackSel}

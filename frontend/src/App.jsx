@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import "./index.css";
-import CurveEditor from "./components/CurveEditor";
+import CurveEditor, { TimelineRuler } from "./components/CurveEditor";
 
 // ─────────────────────────────────────────────────────────────────
 // TIMECODE HELPERS
 // ─────────────────────────────────────────────────────────────────
 const CINEMATIC_FPS = 24;
-const TIMELINE_CANVAS_W = 6000; // must match CANVAS_WIDTH in CurveEditor
+const BASE_CANVAS_W = 6000;
 const FALLBACK_DURATION_S = 10;
 
 function secsToTC(totalSecs, fps = CINEMATIC_FPS) {
@@ -427,13 +427,36 @@ function Timeline() {
 
   // ── Duration & scrubber state ─────────────────────────────────
   const [durationS,    setDurationS]    = useState(FALLBACK_DURATION_S);
-  const [durationInput, setDurationInput] = useState(secsToTC(FALLBACK_DURATION_S));
+  const [durationInput, setDurationInput] = useState(`${FALLBACK_DURATION_S}s`);
   const [currentFrame, setCurrentFrame] = useState(0);
 
-  const maxFrame   = durationS * CINEMATIC_FPS;
-  const frameToXTL = (frame) => (frame / maxFrame) * TIMELINE_CANVAS_W;
+  const viewportRef = useRef(null);
+  const [viewportWidth, setViewportWidth] = useState(1000); // fallback
 
-  const canvasRef    = useRef(null); // the 6000 px-wide scrollable canvas div
+  useEffect(() => {
+    if (!viewportRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (let entry of entries) {
+        setViewportWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(viewportRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const [zoomSlider, setZoomSlider] = useState(50); // 0 to 100
+  
+  // canvasWidth calculation
+  // Min width = viewportWidth (fits full timeline in view)
+  // Max width = viewportWidth * durationS (1s takes up full viewport)
+  const minWidth = viewportWidth;
+  const maxWidth = Math.max(viewportWidth, viewportWidth * durationS);
+  const canvasWidth = minWidth * Math.pow(maxWidth / minWidth, zoomSlider / 100);
+
+  const maxFrame   = durationS * CINEMATIC_FPS;
+  const frameToXTL = (frame) => (frame / maxFrame) * canvasWidth;
+
+  const canvasRef    = useRef(null); // the scrollable canvas div
   const isScrubbing  = useRef(false);
 
   // Clamp scrubber when duration shrinks.
@@ -442,14 +465,16 @@ function Timeline() {
   }, [maxFrame]);
 
   const commitDuration = () => {
-    const parsed = tcToSecs(durationInput);
-    if (!parsed || parsed <= 0 || !isFinite(parsed)) {
+    const rawDigits = durationInput.replace(/\D/g, "");
+    const parsed = parseInt(rawDigits, 10);
+    
+    if (isNaN(parsed) || parsed <= 0) {
       setDurationS(FALLBACK_DURATION_S);
-      setDurationInput(secsToTC(FALLBACK_DURATION_S));
+      setDurationInput(`${FALLBACK_DURATION_S}s`);
     } else {
-      const clamped = Math.max(1, Math.min(3600, Math.round(parsed)));
+      const clamped = Math.max(1, Math.min(3600, parsed));
       setDurationS(clamped);
-      setDurationInput(secsToTC(clamped));
+      setDurationInput(`${clamped}s`);
     }
   };
 
@@ -459,13 +484,13 @@ function Timeline() {
     isScrubbing.current = true;
     if (canvasRef.current) {
       const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
-      setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / TIMELINE_CANVAS_W) * maxFrame))));
+      setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))));
     }
   };
   const handleScrubMove = (e) => {
     if (!isScrubbing.current || !canvasRef.current) return;
     const x = e.clientX - canvasRef.current.getBoundingClientRect().left;
-    setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / TIMELINE_CANVAS_W) * maxFrame))));
+    setCurrentFrame(Math.max(0, Math.min(maxFrame, Math.round((x / canvasWidth) * maxFrame))));
   };
   const handleScrubUp = (e) => {
     try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
@@ -612,7 +637,9 @@ function Timeline() {
                 type="range"
                 min="0"
                 max="100"
-                defaultValue="50"
+                step="1"
+                value={zoomSlider}
+                onChange={(e) => setZoomSlider(Number(e.target.value))}
                 className="w-20 h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-[#FFD500]"
               />
               <button
@@ -788,13 +815,13 @@ function Timeline() {
         </div>
 
         {/* Scrollable SVG canvas */}
-        <div className="bg-[#0a0a0c] relative overflow-x-auto no-scrollbar min-w-0">
+        <div ref={viewportRef} className="bg-[#0a0a0c] relative overflow-x-auto no-scrollbar min-w-0">
           {/*
             This div is the scrollable content area. Its width is set wide enough
             to show the full timeline at any zoom level. The curve-editor will resize
             it dynamically once wired up.
           */}
-          <div ref={canvasRef} className="relative h-full" style={{ width: "6000px" }}>
+          <div ref={canvasRef} className="relative h-full" style={{ width: canvasWidth }}>
             {/* Timeline ruler (tick marks injected by JS in a later chunk) */}
             <div
               className="absolute top-0 left-0 right-0 h-[30px] z-20 overflow-hidden
@@ -803,7 +830,9 @@ function Timeline() {
               onPointerMove={handleScrubMove}
               onPointerUp={handleScrubUp}
               onPointerCancel={handleScrubUp}
-            />
+            >
+              <TimelineRuler canvasWidth={canvasWidth} maxFrame={maxFrame} onFrameChange={setCurrentFrame} />
+            </div>
 
             {/* Track lane area — sits below the 30 px ruler */}
             <div
@@ -812,6 +841,7 @@ function Timeline() {
             >
               <CurveEditor
                 maxFrame={maxFrame}
+                canvasWidth={canvasWidth}
                 onFrameChange={setCurrentFrame}
                 lockedTracks={lockedTracks}
                 hiddenTracks={hiddenTracks}
