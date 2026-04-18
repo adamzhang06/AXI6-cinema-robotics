@@ -32,21 +32,21 @@ import websockets
 from dotenv import load_dotenv
 
 # ── Slide Pins (BCM) ──────────────────────────────────────────────────────────
-SLIDE_EN   = 14
+SLIDE_EN = 14
 SLIDE_STEP = 15
-SLIDE_DIR  = 18
+SLIDE_DIR = 18
 
 # ── Pan Pins (BCM) ────────────────────────────────────────────────────────────
-PAN_EN   = 8
+PAN_EN = 8
 PAN_STEP = 7
-PAN_DIR  = 1
+PAN_DIR = 1
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SLIDE_STEPS_PER_INCH     = 1270
-PAN_STEPS_PER_REV        = 8000
-PAN_STEPS_PER_SLIDE_STEP = 0.4    # parasitic pan steps per slide step (tune empirically)
+SLIDE_STEPS_PER_INCH = 1270
+PAN_STEPS_PER_REV = 8000
+PAN_STEPS_PER_SLIDE_STEP = 0.4  # parasitic pan steps per slide step (tune empirically)
 
-PULSE_WIDTH = 0.000005             # 5 µs HIGH time required by stepper drivers
+PULSE_WIDTH = 0.000005  # 5 µs HIGH time required by stepper drivers
 
 
 # ── GPIO ──────────────────────────────────────────────────────────────────────
@@ -54,15 +54,15 @@ def setup():
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
     GPIO.setup([SLIDE_EN, SLIDE_STEP, SLIDE_DIR, PAN_EN, PAN_STEP, PAN_DIR], GPIO.OUT)
-    GPIO.output(SLIDE_EN,   GPIO.LOW)   # active-LOW enable
-    GPIO.output(PAN_EN,     GPIO.LOW)
+    GPIO.output(SLIDE_EN, GPIO.LOW)  # active-LOW enable
+    GPIO.output(PAN_EN, GPIO.LOW)
     GPIO.output(SLIDE_STEP, GPIO.LOW)
-    GPIO.output(PAN_STEP,   GPIO.LOW)
+    GPIO.output(PAN_STEP, GPIO.LOW)
 
 
 def teardown():
-    GPIO.output(SLIDE_EN, GPIO.HIGH)    # disable drivers
-    GPIO.output(PAN_EN,   GPIO.HIGH)
+    GPIO.output(SLIDE_EN, GPIO.HIGH)  # disable drivers
+    GPIO.output(PAN_EN, GPIO.HIGH)
     GPIO.cleanup()
 
 
@@ -78,47 +78,47 @@ def compile_trajectory(json_data):
     Events are sorted ascending by fire_time_s so execute_move can stream
     through them in a single pass.
     """
-    fps       = json_data["fps"]
+    fps = json_data["fps"]
     frame_dur = 1.0 / fps
 
-    tracks    = json_data["tracks"]
-    slide_pos = tracks["slide"]   # list of absolute inches, one per frame
-    pan_pos   = tracks["pan"]     # list of absolute degrees, one per frame
+    tracks = json_data["tracks"]
+    slide_pos = tracks["slide"]  # list of absolute inches, one per frame
+    pan_pos = tracks["pan"]  # list of absolute degrees, one per frame
     # tilt_pos = tracks["tilt"]   # placeholder — tilt hardware not yet wired
 
     events = []
 
     prev_slide_dir = None
-    prev_pan_dir   = None
+    prev_pan_dir = None
 
     for i in range(1, len(slide_pos)):
         t_start = (i - 1) * frame_dur
-        t_end   =  i      * frame_dur
+        t_end = i * frame_dur
 
         # ── Slide delta → steps ───────────────────────────────────────────
-        slide_delta = slide_pos[i] - slide_pos[i - 1]                  # inches
+        slide_delta = slide_pos[i] - slide_pos[i - 1]  # inches
         slide_steps = int(round(slide_delta * SLIDE_STEPS_PER_INCH))
 
         # ── Pan delta → intended steps ────────────────────────────────────
-        pan_delta    = pan_pos[i] - pan_pos[i - 1]                     # degrees
+        pan_delta = pan_pos[i] - pan_pos[i - 1]  # degrees
         intended_pan = int(round((pan_delta / 360.0) * PAN_STEPS_PER_REV))
 
         # ── Parasitic compensation ────────────────────────────────────────
         # The slide carriage physically rotates the camera as it travels.
         # Subtract that coupled rotation so the pan motor cancels it out.
         parasitic = int(round(slide_steps * PAN_STEPS_PER_SLIDE_STEP))
-        net_pan   = intended_pan - parasitic
+        net_pan = intended_pan - parasitic
 
         # ── Direction events (emitted at t_start before any step pulses) ──
-        slide_dir = GPIO.HIGH if slide_steps >= 0 else GPIO.LOW
-        pan_dir   = GPIO.HIGH if net_pan   >= 0 else GPIO.LOW
+        slide_dir = GPIO.LOW if slide_steps >= 0 else GPIO.HIGH
+        pan_dir = GPIO.HIGH if net_pan >= 0 else GPIO.LOW
 
         if slide_steps != 0 and slide_dir != prev_slide_dir:
-            events.append(('dir', t_start, SLIDE_DIR, slide_dir))
+            events.append(("dir", t_start, SLIDE_DIR, slide_dir))
             prev_slide_dir = slide_dir
 
         if net_pan != 0 and pan_dir != prev_pan_dir:
-            events.append(('dir', t_start, PAN_DIR, pan_dir))
+            events.append(("dir", t_start, PAN_DIR, pan_dir))
             prev_pan_dir = pan_dir
 
         # ── Distribute slide steps evenly across the frame window ─────────
@@ -126,14 +126,14 @@ def compile_trajectory(json_data):
         if n_slide > 0:
             for j in range(n_slide):
                 fire = t_start + (j + 0.5) * frame_dur / n_slide
-                events.append(('step', fire, SLIDE_STEP))
+                events.append(("step", fire, SLIDE_STEP))
 
         # ── Distribute net pan steps evenly across the frame window ───────
         n_pan = abs(net_pan)
         if n_pan > 0:
             for j in range(n_pan):
                 fire = t_start + (j + 0.5) * frame_dur / n_pan
-                events.append(('step', fire, PAN_STEP))
+                events.append(("step", fire, PAN_STEP))
 
         # ── Tilt placeholder ──────────────────────────────────────────────
         # tilt_delta = tilt_pos[i] - tilt_pos[i - 1]                   # degrees
@@ -162,17 +162,17 @@ def execute_move(event_queue):
     start = time.perf_counter()
 
     for event in event_queue:
-        kind      = event[0]
+        kind = event[0]
         fire_time = event[1]
 
         while time.perf_counter() - start < fire_time:
             pass
 
-        if kind == 'dir':
+        if kind == "dir":
             _, _, pin, value = event
             GPIO.output(pin, value)
 
-        elif kind == 'step':
+        elif kind == "step":
             _, _, pin = event
             GPIO.output(pin, GPIO.HIGH)
             end = time.perf_counter() + PULSE_WIDTH
@@ -183,7 +183,7 @@ def execute_move(event_queue):
 
 # ── WebSocket Bridge ──────────────────────────────────────────────────────────
 
-event_queue = []   # compiled trajectory lives here between save and execute
+event_queue = []  # compiled trajectory lives here between save and execute
 
 
 async def listen_to_hub(uri: str):
@@ -210,16 +210,20 @@ async def listen_to_hub(uri: str):
                     if command == "save_trajectory":
                         print("📥  Trajectory received — compiling...")
                         event_queue = compile_trajectory(data)
-                        step_count  = sum(1 for e in event_queue if e[0] == "step")
-                        print(f"    Trajectory compiled and ready  "
-                              f"({len(event_queue):,} events, {step_count:,} step pulses)\n")
+                        step_count = sum(1 for e in event_queue if e[0] == "step")
+                        print(
+                            f"    Trajectory compiled and ready  "
+                            f"({len(event_queue):,} events, {step_count:,} step pulses)\n"
+                        )
 
                     elif command == "execute_move":
                         if not event_queue:
-                            print("WARN: execute_move received but no trajectory is loaded — ignoring.\n")
+                            print(
+                                "WARN: execute_move received but no trajectory is loaded — ignoring.\n"
+                            )
                             continue
                         print("🚀  Executing move...\n")
-                        execute_move(event_queue)   # blocks until motors finish
+                        execute_move(event_queue)  # blocks until motors finish
                         print("Done.\n")
 
                     else:
