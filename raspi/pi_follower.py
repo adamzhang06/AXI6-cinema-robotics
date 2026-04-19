@@ -345,10 +345,9 @@ async def listen_to_hub(uri: str, machine):
                             print(f"WARN: jog ignored — {axis} is locked by trajectory.\n")
                             continue
                         direction = float(data.get("direction", 0))
-                        power     = float(data.get("power", 0.25)) * -direction
-                        print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
+                        print(f"🕹  start_jog  axis={axis}  direction={direction:+.0f}")
                         if axis == "slide":
-                            await slide_motor.set_power(power, extra={"step_delay": 100})
+                            await slide_motor.set_power(-direction)
                         else:
                             print(f"WARN: unknown jog axis {axis!r}\n")
 

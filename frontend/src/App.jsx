@@ -168,10 +168,9 @@ function JogHome() {
 
 function LeftSidebar({ sendMessage, isExecuting, operationMode, onSetMode }) {
   const jogDisabled = isExecuting || operationMode !== "trajectory";
-  const [jogSpeed, setJogSpeed] = useState(50); // 1–100 %
 
   const startJog = (axis, direction) =>
-    sendMessage({ command: "start_jog", axis, direction, power: (jogSpeed / 100) * 0.1 });
+    sendMessage({ command: "start_jog", axis, direction });
   const stopJog = (axis) => sendMessage({ command: "stop_jog", axis });
 
   return (
@@ -291,27 +290,6 @@ function LeftSidebar({ sendMessage, isExecuting, operationMode, onSetMode }) {
           </div>
           <span className="ctrl-label mt-1 block">Pan &amp; Tilt</span>
         </div>
-      </div>
-
-      {/* ── Jog Speed ──────────────────────────────────────────── */}
-      <div className="mt-[14px]">
-        <div className="flex items-center justify-between mb-1">
-          <span className="ctrl-label">Max Jog Speed</span>
-          <span
-            className="text-[11px] font-semibold text-white/70"
-            style={{ fontFamily: "var(--font-mono)" }}
-          >
-            {jogSpeed}%
-          </span>
-        </div>
-        <input
-          type="range"
-          min="1"
-          max="100"
-          value={jogSpeed}
-          onChange={(e) => setJogSpeed(Number(e.target.value))}
-          className="w-full h-1 cursor-pointer accent-[#FFD500]"
-        />
       </div>
 
       {/* ── Dynamic settings area (context-dependent) ─────────── */}
