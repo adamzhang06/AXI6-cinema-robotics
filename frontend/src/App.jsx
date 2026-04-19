@@ -459,6 +459,7 @@ function Timeline({
   setActiveTrack,
   curveEditorRef,
   onWaypointsChange,
+  onPrimarySelectionChange,
   waypointsByTrack,
   sendMessage,
 }) {
@@ -472,6 +473,11 @@ function Timeline({
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === "Shift") setIsShiftDown(true);
+      if ((e.metaKey || e.ctrlKey) && e.key === "a") {
+        if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+        e.preventDefault();
+        if (activeTrack) curveEditorRef.current?.selectAllOnTrack(activeTrack);
+      }
     };
     const handleKeyUp = (e) => {
       if (e.key === "Shift") setIsShiftDown(false);
@@ -482,7 +488,7 @@ function Timeline({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, []);
+  }, [activeTrack, curveEditorRef]);
 
   const toggle = (setter, id) =>
     setter((prev) => {
@@ -530,6 +536,7 @@ function Timeline({
   const lastTimeRef = useRef(null);
   const scrubMouseX = useRef(null);
   const scrubRaf = useRef(null);
+  const pendingZoomScrollRef = useRef(null); // screen-x of playhead to restore after zoom
 
   const startAutoScroll = () => {
     if (scrubRaf.current) return;
@@ -613,17 +620,44 @@ function Timeline({
     if (isPlaying === "reverse" && currentFrame <= 0) setIsPlaying("paused");
   }, [currentFrame, isPlaying, maxFrame]);
 
-  // Auto-scroll to keep playhead visible during playback.
+  // Auto-scroll to keep playhead visible
   useEffect(() => {
-    if (isPlaying === "paused" || !viewportRef.current) return;
+    if (!viewportRef.current || isScrubbing.current) return;
     const x = (currentFrame / maxFrame) * canvasWidth;
     const { scrollLeft, clientWidth } = viewportRef.current;
-    if (x > scrollLeft + clientWidth - 80) {
-      viewportRef.current.scrollLeft = x - clientWidth * 0.3;
-    } else if (x < scrollLeft + 80) {
-      viewportRef.current.scrollLeft = Math.max(0, x - clientWidth * 0.7);
+    
+    if (isPlaying !== "paused") {
+      // Playback scrolling (jump ahead)
+      if (x > scrollLeft + clientWidth - 80) {
+        viewportRef.current.scrollLeft = x - clientWidth * 0.3;
+      } else if (x < scrollLeft + 80) {
+        viewportRef.current.scrollLeft = Math.max(0, x - clientWidth * 0.7);
+      }
+    } else {
+      // Jump/Nav scrolling (center the playhead if out of bounds)
+      if (x > scrollLeft + clientWidth || x < scrollLeft) {
+        viewportRef.current.scrollLeft = Math.max(0, x - clientWidth / 2);
+      }
     }
   }, [currentFrame, isPlaying, maxFrame, canvasWidth]);
+
+  // After a zoom, restore the playhead to the same screen position.
+  useEffect(() => {
+    if (pendingZoomScrollRef.current === null || !viewportRef.current) return;
+    const newPlayheadX = (currentFrame / maxFrame) * canvasWidth;
+    viewportRef.current.scrollLeft = Math.max(0, newPlayheadX - pendingZoomScrollRef.current);
+    pendingZoomScrollRef.current = null;
+  }, [canvasWidth]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleViewportWheel = (e) => {
+    e.preventDefault();
+    if (!viewportRef.current) return;
+    const playheadX    = (currentFrame / maxFrame) * canvasWidth;
+    const screenPos    = playheadX - viewportRef.current.scrollLeft;
+    pendingZoomScrollRef.current = screenPos;
+    const delta = -e.deltaY * 0.12;
+    setZoomSlider((prev) => Math.max(0, Math.min(100, prev + delta)));
+  };
 
   const commitDuration = () => {
     const rawDigits = durationInput.replace(/\D/g, "");
@@ -767,8 +801,8 @@ function Timeline({
           <div className="flex items-center gap-1.5 p-0.5">
             {/* Eraser — resets active track to two endpoints */}
             <PlaybackBtn
-              title="Clear all waypoints"
-              onClick={() => curveEditorRef.current?.resetTrack(activeTrack)}
+              title="Clear all waypoints on all tracks"
+              onClick={() => curveEditorRef.current?.resetAllTracks()}
             >
               <svg
                 className="w-4 h-4"
@@ -1114,6 +1148,7 @@ function Timeline({
         <div
           ref={viewportRef}
           className="bg-[#0a0a0c] relative overflow-x-auto no-scrollbar min-w-0"
+          onWheel={handleViewportWheel}
         >
           {/*
             This div is the scrollable content area. Its width is set wide enough
@@ -1157,6 +1192,7 @@ function Timeline({
                   onWaypointsChange?.(id, wps);
                 }}
                 onSelectionChange={setHasSelection}
+                onPrimarySelectionChange={onPrimarySelectionChange}
                 lockedTracks={lockedTracks}
                 hiddenTracks={hiddenTracks}
               />
@@ -1192,11 +1228,40 @@ function RightSidebar({
   setCurrentFrame,
   curveEditorRef,
   waypointsByTrack,
+  primarySelection,
   connectionStatus,
   piStatus,
 }) {
   const trackInfo = TRACKS_INFO.find((t) => t.id === activeTrack) ?? null;
   const activeWps = activeTrack ? (waypointsByTrack[activeTrack] ?? []) : [];
+
+  // Compute physical value of the primary selected waypoint
+  const primaryWp      = primarySelection
+    ? (waypointsByTrack[primarySelection.trackId] ?? []).find((wp) => wp.frame === primarySelection.frame)
+    : null;
+  const primaryTrack   = primarySelection ? TRACKS.find((t) => t.id === primarySelection.trackId) : null;
+  const laneHeight     = curveEditorRef.current?.getLaneHeight() ?? 100;
+  const physicalValue  = primaryWp && primaryTrack
+    ? primaryTrack.max - (primaryWp.y / laneHeight) * (primaryTrack.max - primaryTrack.min)
+    : null;
+
+  const [valueInput,    setValueInput]    = useState("");
+  const [editingValue,  setEditingValue]  = useState(false);
+
+  useEffect(() => {
+    if (!editingValue) {
+      setValueInput(physicalValue !== null ? physicalValue.toFixed(2) : "");
+    }
+  }, [physicalValue, editingValue]);
+
+  const commitValue = () => {
+    setEditingValue(false);
+    const parsed = parseFloat(valueInput);
+    if (isNaN(parsed) || !primarySelection || !primaryTrack) return;
+    const clamped = Math.max(primaryTrack.min, Math.min(primaryTrack.max, parsed));
+    curveEditorRef.current?.setWaypointPhysical(primarySelection.trackId, primarySelection.frame, clamped);
+    setValueInput(clamped.toFixed(2));
+  };
   const hasAtFrame = activeWps.some((wp) => wp.frame === currentFrame);
   const prevWp = [...activeWps].reverse().find((wp) => wp.frame < currentFrame);
   const nextWp = activeWps.find((wp) => wp.frame > currentFrame);
@@ -1309,7 +1374,7 @@ function RightSidebar({
 
           <div className="w-px h-4 bg-white/10 mx-0.5" />
 
-          {/* Reset / erase track */}
+          {/* Reset / erase active track */}
           <button
             className={`w-7 ${btnBase} ${btnActive}`}
             title="Reset track waypoints to endpoints"
@@ -1329,6 +1394,25 @@ function RightSidebar({
               <path d="M3 3v5h5" />
             </svg>
           </button>
+        </div>
+
+        {/* Selected waypoint value input */}
+        <div className={`mt-3 transition-opacity duration-200 ${!primaryWp ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
+          <span className="text-[9px] text-white/30 uppercase tracking-widest font-bold block mb-1.5">
+            Selected Value{primaryTrack ? ` (${primaryTrack.unit})` : ""}
+          </span>
+          <input
+            type="text"
+            value={valueInput}
+            onChange={(e) => { setEditingValue(true); setValueInput(e.target.value); }}
+            onBlur={commitValue}
+            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") { setEditingValue(false); setValueInput(physicalValue !== null ? physicalValue.toFixed(2) : ""); } }}
+            className="w-full bg-neutral-950 border border-white/10 rounded px-2 py-1
+                       text-[11px] text-white/80 text-center
+                       shadow-[inset_0_2px_4px_rgba(0,0,0,0.4)]
+                       focus:outline-none focus:border-white/30 transition-colors"
+            style={{ fontFamily: "var(--font-mono)" }}
+          />
         </div>
       </div>
 
@@ -1403,6 +1487,7 @@ export default function App() {
   const [currentFrame, setCurrentFrame] = useState(0);
   const [activeTrack, setActiveTrack] = useState(null);
   const [waypointsByTrack, setWaypointsByTrack] = useState({});
+  const [primarySelection,  setPrimarySelection]  = useState(null); // { trackId, frame } | null
   const { connectionStatus, piStatus, sendMessage } = useAXI6Socket();
 
   const handleWaypointsChange = (trackId, waypoints) => {
@@ -1430,6 +1515,7 @@ export default function App() {
             setActiveTrack={setActiveTrack}
             curveEditorRef={curveEditorRef}
             onWaypointsChange={handleWaypointsChange}
+            onPrimarySelectionChange={setPrimarySelection}
             waypointsByTrack={waypointsByTrack}
             sendMessage={sendMessage}
           />
@@ -1441,6 +1527,7 @@ export default function App() {
           setCurrentFrame={setCurrentFrame}
           curveEditorRef={curveEditorRef}
           waypointsByTrack={waypointsByTrack}
+          primarySelection={primarySelection}
           connectionStatus={connectionStatus}
           piStatus={piStatus}
         />

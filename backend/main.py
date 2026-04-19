@@ -32,6 +32,14 @@ class ConnectionManager:
                     {"sender": "hub", "command": "pi_status", "status": "connected"}
                 ),
             )
+        elif client_id == "ui":
+            status = "connected" if "pi" in self.active_connections else "disconnected"
+            await self.send_to(
+                "ui",
+                json.dumps(
+                    {"sender": "hub", "command": "pi_status", "status": status}
+                ),
+            )
 
     def disconnect(self, client_id: str):
         self.active_connections.pop(client_id, None)

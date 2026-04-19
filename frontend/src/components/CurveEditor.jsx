@@ -191,6 +191,7 @@ function TrackSVG({
   onSetPrimary,
   onSnapFrame,       // (rawFrame) => snappedFrame — cross-track snap from parent
   onSetActiveTrack,  // () => void — notify parent this track became active
+  onPushHistory,     // () => void — snapshot state before a mutation begins
 }) {
   const svgRef          = useRef(null);
   const dragRef         = useRef(null);
@@ -252,6 +253,7 @@ function TrackSVG({
     // Handle circles have priority over waypoint diamonds
     const handleHit = hitTestHandle(x, y);
     if (handleHit) {
+      onPushHistory?.();
       dragRef.current = {
         type: "handle",
         wpIdx: handleHit.wpIdx,
@@ -278,6 +280,7 @@ function TrackSVG({
           onMarqueeSelect([{ trackId: track.id, frame: wp.frame }], true);
           dragFrames = [wp.frame];
         }
+        onPushHistory?.();
         onSetPrimary(wp.frame);
         dragRef.current = {
           type: "waypoint",
@@ -388,7 +391,7 @@ function TrackSVG({
       });
 
       let finalDFrame = Math.max(allowedMinDFrame, Math.min(allowedMaxDFrame, targetDFrame));
-      const finalDY   = Math.max(allowedMinDY,    Math.min(allowedMaxDY,    targetDY));
+      const finalDY   = e.shiftKey ? 0 : Math.max(allowedMinDY, Math.min(allowedMaxDY, targetDY));
 
       // Snap single movable waypoint to a frame on another track
       if (onSnapFrame) {
@@ -463,6 +466,7 @@ function TrackSVG({
     if (isLocked) return;
     const { x, y } = svgCoords(e);
     if (hitTest(x, y) !== -1 || hitTestHandle(x, y)) return;
+    onPushHistory?.();
     const frame = Math.max(1, Math.min(maxFrame - 1, Math.round((x / canvasWidth) * maxFrame)));
     const newY  = Math.max(0, Math.min(laneHeight, y));
     const nextWaypoints = [...waypoints, { frame, y: newY, handleIn: null, handleOut: null }].sort((a, b) => a.frame - b.frame);
@@ -479,6 +483,7 @@ function TrackSVG({
     if (idx === -1) return;
     const wp = waypoints[idx];
     if (wp.frame === 0 || wp.frame === maxFrame) return;
+    onPushHistory?.();
     onUpdateWaypoints(clampHandles(waypoints.filter((_, i) => i !== idx)));
   };
 
@@ -503,6 +508,15 @@ function TrackSVG({
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
     >
+      {/* 5-second grid lines */}
+      {Array.from({ length: Math.floor(maxFrame / CINEMATIC_FPS / 5) }, (_, i) => {
+        const x = ((i + 1) * 5 * CINEMATIC_FPS / maxFrame) * canvasWidth;
+        return (
+          <line key={`g${i}`} x1={x} y1={0} x2={x} y2={laneHeight}
+            stroke="rgba(255,255,255,0.05)" strokeWidth={1} style={{ pointerEvents: "none" }} />
+        );
+      })}
+
       {/* Zero line */}
       <line
         x1={0} y1={zeroY} x2={canvasWidth} y2={zeroY}
@@ -604,9 +618,10 @@ const CurveEditor = forwardRef(function CurveEditor({
   maxFrame,
   canvasWidth = BASE_CANVAS_W,
   isSnapping = true,
-  onSetActiveTrack,   // (trackId: string) => void
-  onWaypointsChange,  // (trackId: string, waypoints: array) => void
-  onSelectionChange,  // (hasSelection: boolean) => void
+  onSetActiveTrack,          // (trackId: string) => void
+  onWaypointsChange,         // (trackId: string, waypoints: array) => void
+  onSelectionChange,         // (hasSelection: boolean) => void
+  onPrimarySelectionChange,  // ({ trackId, frame } | null) => void
   lockedTracks,
   hiddenTracks,
 }, ref) {
@@ -624,9 +639,66 @@ const CurveEditor = forwardRef(function CurveEditor({
   const [selectedWaypoints, setSelectedWaypoints] = useState([]);
   const [primarySelection,  setPrimarySelection]  = useState(null); // { trackId, frame } | null
 
+  // Always-current refs for use inside stable event handlers
+  const pastStatesRef      = useRef([]);
+  const trackDataRef       = useRef(trackData);
+  const maxFrameRef        = useRef(maxFrame);
+  const primarySelRef      = useRef(primarySelection);
+
+  useEffect(() => { trackDataRef.current  = trackData; });
+  useEffect(() => { maxFrameRef.current   = maxFrame;  }, [maxFrame]);
+  useEffect(() => { primarySelRef.current = primarySelection; }, [primarySelection]);
+
+  const pushHistory = () => {
+    pastStatesRef.current = [
+      ...pastStatesRef.current.slice(-49),
+      JSON.parse(JSON.stringify(trackDataRef.current)),
+    ];
+  };
+
   useEffect(() => {
     onSelectionChange?.(selectedWaypoints.length > 0);
   }, [selectedWaypoints, onSelectionChange]);
+
+  useEffect(() => {
+    onPrimarySelectionChange?.(primarySelection);
+  }, [primarySelection, onPrimarySelectionChange]);
+
+  // Global keyboard shortcuts (delete, undo). Cmd+A is handled in the parent.
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const ps = primarySelRef.current;
+        if (!ps) return;
+        const { trackId, frame } = ps;
+        if (frame === 0 || frame === maxFrameRef.current) return;
+        e.preventDefault();
+        pushHistory();
+        setTrackData((td) => {
+          const wps = td[trackId] ?? [];
+          return { ...td, [trackId]: clampHandles(wps.filter((wp) => wp.frame !== frame)) };
+        });
+        setSelectedWaypoints((prev) =>
+          prev.filter((s) => !(s.trackId === trackId && s.frame === frame))
+        );
+        setPrimarySelection(null);
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+        e.preventDefault();
+        if (pastStatesRef.current.length === 0) return;
+        const prev = pastStatesRef.current[pastStatesRef.current.length - 1];
+        pastStatesRef.current = pastStatesRef.current.slice(0, -1);
+        setTrackData(prev);
+        setSelectedWaypoints([]);
+        setPrimarySelection(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Measure actual lane heights after mount.
   useEffect(() => {
@@ -739,7 +811,7 @@ const CurveEditor = forwardRef(function CurveEditor({
     applyEasing(type, allOnTrack, targetTrackId) {
       const trackId = (allOnTrack && targetTrackId) ? targetTrackId : primarySelection?.trackId;
       if (!trackId) return;
-
+      pushHistory();
       setTrackData((current) => {
         const wps = current[trackId];
         if (!wps) return current;
@@ -765,6 +837,7 @@ const CurveEditor = forwardRef(function CurveEditor({
 
     resetTrack(trackId) {
       if (!trackId) return;
+      pushHistory();
       setTrackData((current) => {
         const wps = current[trackId];
         if (!wps) return current;
@@ -775,10 +848,47 @@ const CurveEditor = forwardRef(function CurveEditor({
       setSelectedWaypoints((prev) => prev.filter((s) => s.trackId !== trackId));
     },
 
+    resetAllTracks() {
+      pushHistory();
+      setTrackData((current) =>
+        Object.fromEntries(Object.entries(current).map(([trackId, wps]) => {
+          const start = wps.find((wp) => wp.frame === 0);
+          const end   = wps.find((wp) => wp.frame === maxFrame);
+          return [trackId, [start, end].filter(Boolean)];
+        }))
+      );
+      setSelectedWaypoints([]);
+      setPrimarySelection(null);
+    },
+
+    selectAllOnTrack(trackId) {
+      const wps = trackData[trackId] ?? [];
+      const all = wps.map((wp) => ({ trackId, frame: wp.frame }));
+      setSelectedWaypoints(all);
+      if (all.length > 0) setPrimarySelection({ trackId, frame: all[all.length - 1].frame });
+    },
+
+    setWaypointPhysical(trackId, frame, physicalValue) {
+      const trackConfig = TRACKS.find((t) => t.id === trackId);
+      if (!trackConfig) return;
+      const trackIdx = TRACKS.findIndex((t) => t.id === trackId);
+      const lh = laneHeights[trackIdx] ?? 100;
+      const pixelY = ((trackConfig.max - physicalValue) / (trackConfig.max - trackConfig.min)) * lh;
+      const clampedY = Math.max(0, Math.min(lh, pixelY));
+      pushHistory();
+      setTrackData((current) => ({
+        ...current,
+        [trackId]: (current[trackId] ?? []).map((wp) =>
+          wp.frame === frame ? { ...wp, y: clampedY } : wp
+        ),
+      }));
+    },
+
     addWaypointAt(trackId, frame) {
       const trackIdx = TRACKS.findIndex((t) => t.id === trackId);
       const lh = laneHeights[trackIdx] ?? 100;
       const f  = Math.max(1, Math.min(maxFrame - 1, frame));
+      pushHistory();
       setTrackData((current) => {
         const wps = current[trackId] ?? [];
         if (wps.some((wp) => wp.frame === f)) return current;
@@ -798,6 +908,7 @@ const CurveEditor = forwardRef(function CurveEditor({
 
     removeWaypointAt(trackId, frame) {
       if (frame === 0 || frame === maxFrame) return;
+      pushHistory();
       setTrackData((current) => {
         const wps = current[trackId] ?? [];
         return { ...current, [trackId]: clampHandles(wps.filter((wp) => wp.frame !== frame)) };
@@ -847,6 +958,7 @@ const CurveEditor = forwardRef(function CurveEditor({
               onSetPrimary={(frame) => handleSetPrimary(track.id, frame)}
               onSnapFrame={(rawFrame) => getSnapFrame(rawFrame, track.id)}
               onSetActiveTrack={() => onSetActiveTrack?.(track.id)}
+              onPushHistory={pushHistory}
             />
           </div>
         );
