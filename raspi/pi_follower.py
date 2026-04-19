@@ -271,7 +271,7 @@ async def listen_to_hub(uri: str, machine):
                             continue
                         axis = data.get("axis", "")
                         direction = float(data.get("direction", 0))
-                        power = data.get("power", 0.5) * direction
+                        power = 0.25 * -direction
                         print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
                         if axis == "slide":
                             await slide_motor.set_power(power)
