@@ -171,7 +171,7 @@ function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
   const [jogSpeed, setJogSpeed] = useState(50); // 1–100 %
 
   const startJog = (axis, direction) =>
-    sendMessage({ command: "start_jog", axis, direction, power: jogSpeed / 100 });
+    sendMessage({ command: "start_jog", axis, direction, power: (jogSpeed / 100) * 0.25 });
   const stopJog = (axis) => sendMessage({ command: "stop_jog", axis });
 
   return (
