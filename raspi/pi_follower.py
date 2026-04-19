@@ -330,15 +330,21 @@ async def listen_to_hub(uri: str, machine):
                         motor_locks.update(exec_locks)
                         print(f"🚀  Executing move  orbit={orbit}  locks={exec_locks}\n")
 
-                        # Run in background thread — event loop stays alive for tracking_loop
-                        await asyncio.to_thread(execute_move, queue, exec_locks)
+                        # Run as a separate task so the WebSocket listener stays live
+                        # and can receive emergency_stop mid-trajectory.
+                        async def _run_trajectory(_queue=queue, _locks=exec_locks, _ws=ws):
+                            await asyncio.to_thread(execute_move, _queue, _locks)
+                            motor_locks["slide"] = False
+                            motor_locks["pan"]   = False
+                            motor_locks["tilt"]  = False
+                            print("Done.\n")
+                            try:
+                                await _ws.send(json.dumps({"command": "trajectory_complete"}))
+                                print("📡  Sent trajectory_complete to hub.\n")
+                            except Exception:
+                                pass
 
-                        motor_locks["slide"] = False
-                        motor_locks["pan"]   = False
-                        motor_locks["tilt"]  = False
-                        print("Done.\n")
-                        await ws.send(json.dumps({"command": "trajectory_complete"}))
-                        print("📡  Sent trajectory_complete to hub.\n")
+                        asyncio.create_task(_run_trajectory())
 
                     # ── Jog commands (Viam cloud — slide only) ────────────
                     elif command == "start_jog":
