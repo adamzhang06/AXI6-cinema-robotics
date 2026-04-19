@@ -111,27 +111,32 @@ def compile_trajectory(json_data):
     prev_slide_dir = None
     prev_pan_dir = None
 
+    # Fractional accumulators carry sub-step remainder across frame boundaries.
+    # This prevents cumulative rounding error and ensures the total step count
+    # matches the physical displacement exactly.
+    slide_acc = 0.0
+    pan_acc   = 0.0
+
     for i in range(1, len(slide_pos)):
         t_start = (i - 1) * frame_dur
-        t_end = i * frame_dur
 
         # ── Slide delta → steps ───────────────────────────────────────────
-        slide_delta = slide_pos[i] - slide_pos[i - 1]  # inches
-        slide_steps = int(round(slide_delta * SLIDE_STEPS_PER_INCH))
+        slide_delta = slide_pos[i] - slide_pos[i - 1]
+        slide_acc  += slide_delta * SLIDE_STEPS_PER_INCH
+        slide_steps = int(slide_acc)
+        slide_acc  -= slide_steps          # carry fractional remainder
 
         # ── Pan delta → intended steps ────────────────────────────────────
-        pan_delta = pan_pos[i] - pan_pos[i - 1]  # degrees
-        intended_pan = int(round((pan_delta / 360.0) * PAN_STEPS_PER_REV))
+        pan_delta    = pan_pos[i] - pan_pos[i - 1]
+        intended_pan = (pan_delta / 360.0) * PAN_STEPS_PER_REV
+        parasitic    = slide_delta * SLIDE_STEPS_PER_INCH * PAN_STEPS_PER_SLIDE_STEP
+        pan_acc     += intended_pan - parasitic
+        net_pan      = int(pan_acc)
+        pan_acc     -= net_pan
 
-        # ── Parasitic compensation ────────────────────────────────────────
-        # The slide carriage physically rotates the camera as it travels.
-        # Subtract that coupled rotation so the pan motor cancels it out.
-        parasitic = int(round(slide_steps * PAN_STEPS_PER_SLIDE_STEP))
-        net_pan = intended_pan - parasitic
-
-        # ── Direction events (emitted at t_start before any step pulses) ──
+        # ── Direction events ──────────────────────────────────────────────
         slide_dir = GPIO.LOW if slide_steps >= 0 else GPIO.HIGH
-        pan_dir = GPIO.HIGH if net_pan >= 0 else GPIO.LOW
+        pan_dir   = GPIO.HIGH if net_pan >= 0 else GPIO.LOW
 
         if slide_steps != 0 and slide_dir != prev_slide_dir:
             events.append(("dir", t_start, SLIDE_DIR, slide_dir))
@@ -142,30 +147,25 @@ def compile_trajectory(json_data):
             prev_pan_dir = pan_dir
 
         # ── Distribute slide steps evenly across the frame window ─────────
+        # Steps start at t_start (not half-offset inward) so that adjacent
+        # frames' step spacing is continuous — eliminating the 24 Hz tick.
         n_slide = abs(slide_steps)
         if n_slide > 0:
             for j in range(n_slide):
-                fire = t_start + (j + 0.5) * frame_dur / n_slide
+                fire = t_start + j * frame_dur / n_slide
                 events.append(("step", fire, SLIDE_STEP))
 
-        # ── Distribute net pan steps evenly across the frame window ───────
+        # ── Distribute pan steps evenly across the frame window ───────────
         n_pan = abs(net_pan)
         if n_pan > 0:
             for j in range(n_pan):
-                fire = t_start + (j + 0.5) * frame_dur / n_pan
+                fire = t_start + j * frame_dur / n_pan
                 events.append(("step", fire, PAN_STEP))
 
         # ── Tilt placeholder ──────────────────────────────────────────────
-        # tilt_delta = tilt_pos[i] - tilt_pos[i - 1]                   # degrees
+        # tilt_delta = tilt_pos[i] - tilt_pos[i - 1]
         # tilt_steps = int(round(tilt_delta * TILT_STEPS_PER_DEG))
-        # tilt_dir   = GPIO.HIGH if tilt_steps >= 0 else GPIO.LOW
-        # if tilt_steps != 0 and tilt_dir != prev_tilt_dir:
-        #     events.append(('dir', t_start, TILT_DIR, tilt_dir))
-        #     prev_tilt_dir = tilt_dir
-        # n_tilt = abs(tilt_steps)
-        # for j in range(n_tilt):
-        #     fire = t_start + (j + 0.5) * frame_dur / n_tilt
-        #     events.append(('step', fire, TILT_STEP))
+        # ...
 
     events.sort(key=lambda e: e[1])
     return events
