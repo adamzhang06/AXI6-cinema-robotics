@@ -183,7 +183,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
             elif command == "execute_move":
                 print("\n🚀  EXECUTING MOVE — forwarding to pi\n")
-                await manager.send_to("pi", json.dumps({"command": "execute_move"}))
+                # Tell the Pi to drop pan events when CSRT tracking owns the pan axis
+                orbit = tracking_mode == "csrt"
+                await manager.send_to("pi", json.dumps({"command": "execute_move", "orbit": orbit}))
                 await manager.send_to(
                     client_id, json.dumps({"ack": "execute_move", "status": "ok"})
                 )

@@ -292,18 +292,31 @@ async def listen_to_hub(uri: str, machine):
                             print("WARN: execute_move — no trajectory loaded, ignoring.\n")
                             continue
 
-                        # Determine which axes this trajectory actually moves
-                        step_pins = {e[2] for e in event_queue if e[0] == "step"}
+                        orbit = data.get("orbit", False)
+
+                        # In orbit mode the pan is owned by CSRT tracking — strip all
+                        # pan step/dir events so the trajectory only drives the slide.
+                        queue = (
+                            [e for e in event_queue
+                             if not (e[0] in ("step", "dir") and e[2] in (PAN_STEP, PAN_DIR))]
+                            if orbit else event_queue
+                        )
+
+                        step_pins = {e[2] for e in queue if e[0] == "step"}
                         exec_locks = {
+                            "slide": SLIDE_STEP in step_pins,
+                            "pan":   False,   # pan always free in orbit; only slide locked
+                            "tilt":  False,
+                        } if orbit else {
                             "slide": SLIDE_STEP in step_pins,
                             "pan":   PAN_STEP   in step_pins,
                             "tilt":  False,
                         }
                         motor_locks.update(exec_locks)
-                        print(f"🚀  Executing move  locks={exec_locks}\n")
+                        print(f"🚀  Executing move  orbit={orbit}  locks={exec_locks}\n")
 
                         # Run in background thread — event loop stays alive for tracking_loop
-                        await asyncio.to_thread(execute_move, event_queue, exec_locks)
+                        await asyncio.to_thread(execute_move, queue, exec_locks)
 
                         motor_locks["slide"] = False
                         motor_locks["pan"]   = False
