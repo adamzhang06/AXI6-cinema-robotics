@@ -34,10 +34,10 @@ from viam.robot.client import RobotClient
 from viam.components.motor import Motor
 
 # ── Viam Cloud ───────────────────────────────────────────────────────────────
-VIAM_API_KEY    = "rrlkbr70e4rmzm1p91eeyum9tzq559qr"
+VIAM_API_KEY = "rrlkbr70e4rmzm1p91eeyum9tzq559qr"
 VIAM_API_KEY_ID = "4d649e48-b9b9-4551-9890-d3bcfe640d4a"
-VIAM_ADDRESS    = "axi6-main.40ro1hz53b.viam.cloud"
-SLIDE_MOTOR_NAME = "slide"
+VIAM_ADDRESS = "axi6-main.40ro1hz53b.viam.cloud"
+SLIDE_MOTOR_NAME = "slide_motor"
 
 
 async def connect_viam():
@@ -179,8 +179,8 @@ def execute_move(event_queue):
     Direction events set a GPIO pin immediately. Step events pulse the pin HIGH
     for PULSE_WIDTH seconds then pull it LOW, as required by the stepper drivers.
     """
-    GPIO.output(SLIDE_EN, GPIO.LOW)    # enable drivers before move starts
-    GPIO.output(PAN_EN,   GPIO.LOW)
+    GPIO.output(SLIDE_EN, GPIO.LOW)  # enable drivers before move starts
+    GPIO.output(PAN_EN, GPIO.LOW)
 
     start = time.perf_counter()
 
@@ -203,13 +203,13 @@ def execute_move(event_queue):
                 pass
             GPIO.output(pin, GPIO.LOW)
 
-    GPIO.output(SLIDE_EN, GPIO.HIGH)   # disable drivers (active-LOW)
-    GPIO.output(PAN_EN,   GPIO.HIGH)
+    GPIO.output(SLIDE_EN, GPIO.HIGH)  # disable drivers (active-LOW)
+    GPIO.output(PAN_EN, GPIO.HIGH)
 
 
 # ── WebSocket Bridge ──────────────────────────────────────────────────────────
 
-event_queue = []   # compiled trajectory lives here between save and execute
+event_queue = []  # compiled trajectory lives here between save and execute
 is_executing = False  # traffic-cop flag: True while GPIO trajectory is running
 
 
@@ -252,11 +252,13 @@ async def listen_to_hub(uri: str, machine):
 
                     elif command == "execute_move":
                         if not event_queue:
-                            print("WARN: execute_move received but no trajectory loaded — ignoring.\n")
+                            print(
+                                "WARN: execute_move received but no trajectory loaded — ignoring.\n"
+                            )
                             continue
                         print("🚀  Executing move...\n")
                         is_executing = True
-                        execute_move(event_queue)   # blocks until motors finish
+                        execute_move(event_queue)  # blocks until motors finish
                         is_executing = False
                         print("Done.\n")
                         await ws.send(json.dumps({"command": "trajectory_complete"}))
@@ -267,9 +269,9 @@ async def listen_to_hub(uri: str, machine):
                         if is_executing:
                             print("WARN: jog ignored — trajectory is running.\n")
                             continue
-                        axis      = data.get("axis", "")
+                        axis = data.get("axis", "")
                         direction = float(data.get("direction", 0))
-                        power     = data.get("power", 0.5) * direction
+                        power = data.get("power", 0.5) * direction
                         print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
                         if axis == "slide":
                             await slide_motor.set_power(power)
