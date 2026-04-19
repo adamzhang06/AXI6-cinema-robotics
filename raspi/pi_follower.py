@@ -72,8 +72,8 @@ def setup():
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
     GPIO.setup([SLIDE_EN, SLIDE_STEP, SLIDE_DIR, PAN_EN, PAN_STEP, PAN_DIR], GPIO.OUT)
-    GPIO.output(SLIDE_EN, GPIO.LOW)   # active-LOW enable
-    GPIO.output(PAN_EN,   GPIO.LOW)
+    GPIO.output(SLIDE_EN, GPIO.HIGH)  # start disabled — motors free to move by hand
+    GPIO.output(PAN_EN,   GPIO.HIGH)
     GPIO.output(SLIDE_STEP, GPIO.LOW)
     GPIO.output(PAN_STEP,   GPIO.LOW)
 
@@ -217,8 +217,12 @@ async def tracking_loop():
 
         speed = current_pan_speed
         if abs(speed) < TRACK_DEADBAND:
+            GPIO.output(PAN_EN, GPIO.HIGH)  # disable driver when idle — motor free
             await asyncio.sleep(0.01)
             continue
+
+        # Enable driver only while actively moving
+        GPIO.output(PAN_EN, GPIO.LOW)
 
         # Set direction
         GPIO.output(PAN_DIR, GPIO.HIGH if speed > 0 else GPIO.LOW)
@@ -288,12 +292,13 @@ async def listen_to_hub(uri: str, machine):
                         if is_executing:
                             print("WARN: jog ignored — trajectory is running.\n")
                             continue
-                        axis      = data.get("axis", "")
-                        direction = float(data.get("direction", 0))
-                        power     = 0.25 * -direction
-                        print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
+                        axis       = data.get("axis", "")
+                        direction  = float(data.get("direction", 0))
+                        power      = 0.25 * -direction
+                        step_delay = int(data.get("step_delay", 100))
+                        print(f"🕹  start_jog  axis={axis}  power={power:.2f}  step_delay={step_delay}µs")
                         if axis == "slide":
-                            await slide_motor.set_power(power, extra={"step_delay": 100})
+                            await slide_motor.set_power(power, extra={"step_delay": step_delay})
                         else:
                             print(f"WARN: unknown jog axis {axis!r}\n")
 

@@ -167,10 +167,14 @@ function JogHome() {
 }
 
 function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
-  const jogDisabled = isExecuting || isTracking;
+  const jogDisabled = isExecuting; // tracking active is still allowed to jog
+  const [jogSpeed, setJogSpeed] = useState(50); // 1–100 %
+
+  // 1% → 500 µs delay (slow), 100% → 1 µs delay (fast)
+  const stepDelay = Math.round(500 - (jogSpeed - 1) * (499 / 99));
 
   const startJog = (axis, direction) =>
-    sendMessage({ command: "start_jog", axis, direction, power: 0.5 });
+    sendMessage({ command: "start_jog", axis, direction, power: 0.5, step_delay: stepDelay });
   const stopJog = (axis) => sendMessage({ command: "stop_jog", axis });
 
   return (
@@ -300,14 +304,15 @@ function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
             className="text-[11px] font-semibold text-white/70"
             style={{ fontFamily: "var(--font-mono)" }}
           >
-            50%
+            {jogSpeed}%
           </span>
         </div>
         <input
           type="range"
-          min="0"
+          min="1"
           max="100"
-          defaultValue="50"
+          value={jogSpeed}
+          onChange={(e) => setJogSpeed(Number(e.target.value))}
           className="w-full h-1 cursor-pointer accent-[#FFD500]"
         />
       </div>
