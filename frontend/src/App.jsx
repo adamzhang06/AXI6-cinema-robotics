@@ -62,16 +62,8 @@ function BarDivider({ className = "" }) {
 // ─────────────────────────────────────────────────────────────────
 function Navbar() {
   return (
-    <div className="bg-[var(--bg-main-light)] flex items-center text-xs w-full text-white">
-      {/* Aligns "AXI6" directly above the 50 px toolbar column */}
-      <div className="w-[50px] flex justify-center shrink-0">
-        <span className="font-bold tracking-wider">AXI6</span>
-      </div>
-      {/* Aligns "|" above the 2 px gap between toolbar and center */}
-      <div className="w-[2px] flex justify-center items-center shrink-0">
-        <span className="opacity-30">|</span>
-      </div>
-      <span className="font-bold pl-3 text-[#cccccc]">Cinema Robotics</span>
+    <div className="bg-[var(--bg-main-light)] flex items-center px-3 w-full">
+      <img src="/src/assets/logo.png" alt="AXIS Slider" className="h-6 w-auto object-contain" />
     </div>
   );
 }
@@ -79,24 +71,17 @@ function Navbar() {
 // ─────────────────────────────────────────────────────────────────
 // TOOLBAR  (50 px far-left icon strip)
 // ─────────────────────────────────────────────────────────────────
-function Toolbar() {
+function Toolbar({ onToggleCamera, isCameraActive }) {
   return (
     <div className="bg-[var(--bg-main)] flex flex-col p-1 pt-2 items-center gap-4">
-      {/* App logo */}
-      <div className="flex aspect-square w-full items-center justify-center rounded bg-[#2a2a2c] p-0.5">
-        <img
-          src="/axi6_logo.png"
-          alt="AXI6"
-          className="w-full h-full object-contain brightness-150"
-        />
-      </div>
-
-      <hr className="border-white/10 w-8" />
-
-      {/* Camera toggle — logic wired in a later chunk */}
+      {/* Camera toggle */}
       <button
-        className="w-10 h-10 flex items-center justify-center rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition-colors"
+        className={`w-10 h-10 flex items-center justify-center rounded-lg transition-colors
+                    ${isCameraActive
+                      ? "text-[#FFD500] bg-white/15"
+                      : "text-white/50 hover:text-white hover:bg-white/10"}`}
         title="Toggle Camera"
+        onClick={onToggleCamera}
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -323,35 +308,98 @@ function LeftSidebar({ sendMessage, isExecuting }) {
 // ─────────────────────────────────────────────────────────────────
 // VIEWPORT  (shows logo placeholder or live MJPEG stream)
 // ─────────────────────────────────────────────────────────────────
-function Viewport() {
+function Viewport({ isCameraActive }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+
+  useEffect(() => {
+    if (isCameraActive) {
+      navigator.mediaDevices
+        .getUserMedia({ video: true })
+        .then((stream) => {
+          streamRef.current = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.play();
+          }
+        })
+        .catch((err) => console.warn("Camera access failed:", err));
+    } else {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) videoRef.current.srcObject = null;
+    }
+
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+    };
+  }, [isCameraActive]);
+
+  const captureFrame = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || !video.videoWidth) return;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    const jpeg = canvas.toDataURL("image/jpeg", 0.8);
+    // TODO: send via WebSocket e.g. sendMessage({ command: "frame", data: jpeg })
+    console.log("📸 Captured frame (Base64 JPEG):", jpeg.slice(0, 80) + "…");
+  };
+
   return (
     <div className="bg-[var(--bg-main)] flex flex-col p-2 relative min-h-0 min-w-0">
-      {/* Camera-active label — hidden until stream is on */}
+      {/* Camera-active label */}
       <div
-        className="absolute top-4 left-4 z-10 bg-black/50 backdrop-blur-md px-2 py-1
-                      flex items-center gap-2 rounded text-white/80 hidden pointer-events-none"
+        className={`absolute top-4 left-4 z-10 bg-black/50 backdrop-blur-md px-2 py-1
+                    flex items-center gap-2 rounded text-white/80 pointer-events-none
+                    ${isCameraActive ? "" : "hidden"}`}
       >
         <h2 className="panel-header mb-0">CAMERA</h2>
         <div className="w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_8px_#dc2626] animate-cam-pulse" />
       </div>
 
+      {/* Capture button */}
+      {isCameraActive && (
+        <button
+          onClick={captureFrame}
+          className="absolute top-4 right-4 z-10 bg-black/50 backdrop-blur-md px-3 py-1
+                     rounded text-white/80 text-xs hover:bg-black/70 transition-colors"
+          title="Capture Frame"
+        >
+          📸 Capture
+        </button>
+      )}
+
       <div
         className="w-full bg-[var(--bg-lighter)] rounded flex-1 overflow-hidden
-                      relative min-h-0 min-w-0 flex items-center justify-center"
+                   relative min-h-0 min-w-0 flex items-center justify-center"
       >
-        {/* Static logo placeholder (swapped out when camera is on) */}
+        {/* Static logo — hidden when camera is active */}
         <img
           src="/axi6_wide_logo_crop.jpeg"
           alt="AXI6 Logo"
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
+          className={`absolute inset-0 w-full h-full object-cover pointer-events-none select-none
+                      ${isCameraActive ? "hidden" : ""}`}
         />
-        {/* MJPEG stream — hidden by default, src set by camera logic */}
-        <img
-          id="mjpeg-stream"
-          src=""
-          alt="Camera Feed"
-          className="absolute inset-0 w-full h-full object-contain bg-black hidden"
+
+        {/* Live webcam feed */}
+        <video
+          ref={videoRef}
+          className={`absolute inset-0 w-full h-full object-contain bg-black
+                      ${isCameraActive ? "" : "hidden"}`}
+          muted
+          playsInline
         />
+
+        {/* Hidden canvas for frame capture */}
+        <canvas ref={canvasRef} className="hidden" />
       </div>
     </div>
   );
@@ -1515,6 +1563,7 @@ export default function App() {
   const [waypointsByTrack, setWaypointsByTrack] = useState({});
   const [primarySelection,  setPrimarySelection]  = useState(null); // { trackId, frame } | null
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isCameraActive, setIsCameraActive] = useState(false);
   const { connectionStatus, piStatus, sendMessage } = useAXI6Socket({
     onTrajectoryComplete: () => setIsExecuting(false),
   });
@@ -1524,18 +1573,18 @@ export default function App() {
   };
 
   return (
-    <div className="grid grid-rows-[24px_1fr] h-screen w-screen gap-[2px] overflow-hidden text-[#cccccc]">
+    <div className="grid grid-rows-[40px_1fr] h-screen w-screen gap-[2px] overflow-hidden text-[#cccccc]">
       <Navbar />
 
       {/* Three-column workspace */}
       <div className="grid grid-cols-[50px_1fr_300px] gap-[2px] h-full overflow-hidden">
-        <Toolbar />
+        <Toolbar onToggleCamera={() => setIsCameraActive((v) => !v)} isCameraActive={isCameraActive} />
 
         {/* Center: top (controls + viewport) and bottom (timeline) */}
         <div className="grid grid-rows-[1fr_1fr] gap-[2px]">
           <div className="grid grid-cols-[320px_1fr] gap-[2px]">
             <LeftSidebar sendMessage={sendMessage} isExecuting={isExecuting} />
-            <Viewport />
+            <Viewport isCameraActive={isCameraActive} />
           </div>
           <Timeline
             currentFrame={currentFrame}

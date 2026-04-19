@@ -274,7 +274,7 @@ async def listen_to_hub(uri: str, machine):
                         power = 0.25 * -direction
                         print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
                         if axis == "slide":
-                            await slide_motor.set_power(power)
+                            await slide_motor.set_power(power, extra={"step_delay": 100})
                         else:
                             print(f"WARN: unknown jog axis {axis!r}\n")
 
