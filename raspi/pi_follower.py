@@ -1,24 +1,15 @@
 """
 raspi/pi_follower.py
 --------------------
-Trajectory follower: reads a pre-baked JSON trajectory produced by the React
-UI and drives the slide and pan motors via GPIO busy-wait pulses.
+Trajectory follower + live YOLO tracking via raw GPIO pan pulses.
 
-It does NOT plan S-curves. The UI has already done that math. This script only
-converts absolute per-frame positions into step counts, applies parasitic pan
-compensation, distributes the steps evenly within each frame's time window, and
-fires the GPIO pins at the right moments.
+Modes:
+  Trajectory  — pre-baked JSON executed via busy-wait GPIO loop (unchanged).
+  Tracking    — async pulse loop driven by pan_speed floats from the hub.
+  Jog         — slide motor via Viam cloud SDK (set_power / stop).
 
-Expected JSON format:
-    {
-        "fps": 24,
-        "duration": <seconds>,
-        "tracks": {
-            "slide": [pos0, pos1, ..., posN],   # absolute inches, index = frame
-            "pan":   [pos0, pos1, ..., posN],   # absolute degrees
-            "tilt":  [pos0, pos1, ..., posN]    # absolute degrees (not yet wired)
-        }
-    }
+The tracking loop and trajectory executor share is_executing as a mutex:
+tracking yields to GPIO-land while a trajectory is running.
 """
 
 import asyncio
@@ -33,10 +24,10 @@ from dotenv import load_dotenv
 from viam.robot.client import RobotClient
 from viam.components.motor import Motor
 
-# ── Viam Cloud ───────────────────────────────────────────────────────────────
-VIAM_API_KEY = "rrlkbr70e4rmzm1p91eeyum9tzq559qr"
+# ── Viam Cloud ────────────────────────────────────────────────────────────────
+VIAM_API_KEY    = "rrlkbr70e4rmzm1p91eeyum9tzq559qr"
 VIAM_API_KEY_ID = "4d649e48-b9b9-4551-9890-d3bcfe640d4a"
-VIAM_ADDRESS = "axi6-main.40ro1hz53b.viam.cloud"
+VIAM_ADDRESS    = "axi6-main.40ro1hz53b.viam.cloud"
 SLIDE_MOTOR_NAME = "slide_motor"
 
 
@@ -52,21 +43,28 @@ async def connect_viam():
 
 
 # ── Slide Pins (BCM) ──────────────────────────────────────────────────────────
-SLIDE_EN = 14
+SLIDE_EN   = 14
 SLIDE_STEP = 15
-SLIDE_DIR = 18
+SLIDE_DIR  = 18
 
 # ── Pan Pins (BCM) ────────────────────────────────────────────────────────────
-PAN_EN = 8
+PAN_EN   = 8
 PAN_STEP = 7
-PAN_DIR = 1
+PAN_DIR  = 1
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SLIDE_STEPS_PER_INCH = 1270
-PAN_STEPS_PER_REV = 8000
-PAN_STEPS_PER_SLIDE_STEP = 0.4  # parasitic pan steps per slide step (tune empirically)
+SLIDE_STEPS_PER_INCH      = 1270
+PAN_STEPS_PER_REV         = 8000
+PAN_STEPS_PER_SLIDE_STEP  = 0.4   # parasitic compensation (tune empirically)
 
-PULSE_WIDTH = 0.000005  # 5 µs HIGH time required by stepper drivers
+PULSE_WIDTH = 0.000005  # 5 µs HIGH time for trajectory stepper drivers
+
+# Tracking pulse timing: speed 1.0 → TRACK_MIN_DELAY, speed ~0 → TRACK_MAX_DELAY
+TRACK_MIN_DELAY  = 0.001   # fastest inter-pulse sleep (s) — full speed
+TRACK_MAX_DELAY  = 0.010   # slowest inter-pulse sleep (s) — near-stop
+TRACK_PULSE_HIGH = 0.0001  # 100 µs HIGH pulse for tracking (async, not busy-wait)
+TRACK_TIMEOUT    = 0.5     # zero speed if no "track" command received within this window (s)
+TRACK_DEADBAND   = 0.01    # speeds below this are treated as zero
 
 
 # ── GPIO ──────────────────────────────────────────────────────────────────────
@@ -74,15 +72,15 @@ def setup():
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
     GPIO.setup([SLIDE_EN, SLIDE_STEP, SLIDE_DIR, PAN_EN, PAN_STEP, PAN_DIR], GPIO.OUT)
-    GPIO.output(SLIDE_EN, GPIO.LOW)  # active-LOW enable
-    GPIO.output(PAN_EN, GPIO.LOW)
+    GPIO.output(SLIDE_EN, GPIO.LOW)   # active-LOW enable
+    GPIO.output(PAN_EN,   GPIO.LOW)
     GPIO.output(SLIDE_STEP, GPIO.LOW)
-    GPIO.output(PAN_STEP, GPIO.LOW)
+    GPIO.output(PAN_STEP,   GPIO.LOW)
 
 
 def teardown():
     GPIO.output(SLIDE_EN, GPIO.HIGH)  # disable drivers
-    GPIO.output(PAN_EN, GPIO.HIGH)
+    GPIO.output(PAN_EN,   GPIO.HIGH)
     GPIO.cleanup()
 
 
@@ -98,22 +96,19 @@ def compile_trajectory(json_data):
     Events are sorted ascending by fire_time_s so execute_move can stream
     through them in a single pass.
     """
-    fps = json_data["fps"]
+    fps       = json_data["fps"]
     frame_dur = 1.0 / fps
 
-    tracks = json_data["tracks"]
-    slide_pos = tracks["slide"]  # list of absolute inches, one per frame
-    pan_pos = tracks["pan"]  # list of absolute degrees, one per frame
-    # tilt_pos = tracks["tilt"]   # placeholder — tilt hardware not yet wired
+    tracks    = json_data["tracks"]
+    slide_pos = tracks["slide"]   # absolute inches, one per frame
+    pan_pos   = tracks["pan"]     # absolute degrees, one per frame
 
     events = []
 
     prev_slide_dir = None
-    prev_pan_dir = None
+    prev_pan_dir   = None
 
     # Fractional accumulators carry sub-step remainder across frame boundaries.
-    # This prevents cumulative rounding error and ensures the total step count
-    # matches the physical displacement exactly.
     slide_acc = 0.0
     pan_acc   = 0.0
 
@@ -121,12 +116,12 @@ def compile_trajectory(json_data):
         t_start = (i - 1) * frame_dur
 
         # ── Slide delta → steps ───────────────────────────────────────────
-        slide_delta = slide_pos[i] - slide_pos[i - 1]
-        slide_acc  += slide_delta * SLIDE_STEPS_PER_INCH
-        slide_steps = int(slide_acc)
-        slide_acc  -= slide_steps          # carry fractional remainder
+        slide_delta  = slide_pos[i] - slide_pos[i - 1]
+        slide_acc   += slide_delta * SLIDE_STEPS_PER_INCH
+        slide_steps  = int(slide_acc)
+        slide_acc   -= slide_steps
 
-        # ── Pan delta → intended steps ────────────────────────────────────
+        # ── Pan delta → intended steps (with parasitic compensation) ──────
         pan_delta    = pan_pos[i] - pan_pos[i - 1]
         intended_pan = (pan_delta / 360.0) * PAN_STEPS_PER_REV
         parasitic    = slide_delta * SLIDE_STEPS_PER_INCH * PAN_STEPS_PER_SLIDE_STEP
@@ -135,8 +130,8 @@ def compile_trajectory(json_data):
         pan_acc     -= net_pan
 
         # ── Direction events ──────────────────────────────────────────────
-        slide_dir = GPIO.LOW if slide_steps >= 0 else GPIO.HIGH
-        pan_dir   = GPIO.HIGH if net_pan >= 0 else GPIO.LOW
+        slide_dir = GPIO.LOW  if slide_steps >= 0 else GPIO.HIGH
+        pan_dir   = GPIO.HIGH if net_pan     >= 0 else GPIO.LOW
 
         if slide_steps != 0 and slide_dir != prev_slide_dir:
             events.append(("dir", t_start, SLIDE_DIR, slide_dir))
@@ -146,46 +141,32 @@ def compile_trajectory(json_data):
             events.append(("dir", t_start, PAN_DIR, pan_dir))
             prev_pan_dir = pan_dir
 
-        # ── Distribute slide steps evenly across the frame window ─────────
-        # Steps start at t_start (not half-offset inward) so that adjacent
-        # frames' step spacing is continuous — eliminating the 24 Hz tick.
+        # ── Distribute steps evenly across the frame window ───────────────
         n_slide = abs(slide_steps)
-        if n_slide > 0:
-            for j in range(n_slide):
-                fire = t_start + j * frame_dur / n_slide
-                events.append(("step", fire, SLIDE_STEP))
+        for j in range(n_slide):
+            events.append(("step", t_start + j * frame_dur / n_slide, SLIDE_STEP))
 
-        # ── Distribute pan steps evenly across the frame window ───────────
         n_pan = abs(net_pan)
-        if n_pan > 0:
-            for j in range(n_pan):
-                fire = t_start + j * frame_dur / n_pan
-                events.append(("step", fire, PAN_STEP))
-
-        # ── Tilt placeholder ──────────────────────────────────────────────
-        # tilt_delta = tilt_pos[i] - tilt_pos[i - 1]
-        # tilt_steps = int(round(tilt_delta * TILT_STEPS_PER_DEG))
-        # ...
+        for j in range(n_pan):
+            events.append(("step", t_start + j * frame_dur / n_pan, PAN_STEP))
 
     events.sort(key=lambda e: e[1])
     return events
 
 
-# ── Execution ─────────────────────────────────────────────────────────────────
+# ── Trajectory Execution ──────────────────────────────────────────────────────
 def execute_move(event_queue):
     """
     Stream through the sorted event queue using a perf_counter busy-wait loop.
-
-    Direction events set a GPIO pin immediately. Step events pulse the pin HIGH
-    for PULSE_WIDTH seconds then pull it LOW, as required by the stepper drivers.
+    Blocks the calling thread for the full duration of the move.
     """
-    GPIO.output(SLIDE_EN, GPIO.LOW)  # enable drivers before move starts
-    GPIO.output(PAN_EN, GPIO.LOW)
+    GPIO.output(SLIDE_EN, GPIO.LOW)
+    GPIO.output(PAN_EN,   GPIO.LOW)
 
     start = time.perf_counter()
 
     for event in event_queue:
-        kind = event[0]
+        kind      = event[0]
         fire_time = event[1]
 
         while time.perf_counter() - start < fire_time:
@@ -194,7 +175,6 @@ def execute_move(event_queue):
         if kind == "dir":
             _, _, pin, value = event
             GPIO.output(pin, value)
-
         elif kind == "step":
             _, _, pin = event
             GPIO.output(pin, GPIO.HIGH)
@@ -203,26 +183,67 @@ def execute_move(event_queue):
                 pass
             GPIO.output(pin, GPIO.LOW)
 
-    GPIO.output(SLIDE_EN, GPIO.HIGH)  # disable drivers (active-LOW)
-    GPIO.output(PAN_EN, GPIO.HIGH)
+    GPIO.output(SLIDE_EN, GPIO.HIGH)
+    GPIO.output(PAN_EN,   GPIO.HIGH)
+
+
+# ── Global Tracking State ─────────────────────────────────────────────────────
+event_queue       = []     # compiled trajectory
+is_executing      = False  # True while GPIO trajectory is running
+current_pan_speed = 0.0    # [-1.0, 1.0] written by WebSocket, read by tracking_loop
+last_track_time   = 0.0    # monotonic time of last "track" command
+
+
+# ── Async Tracking Loop ───────────────────────────────────────────────────────
+async def tracking_loop():
+    """
+    Background task: pulses PAN_STEP at a rate proportional to current_pan_speed.
+
+    Yields between pulses so the WebSocket listener can receive new speed values.
+    Automatically zeroes speed if no "track" command arrives within TRACK_TIMEOUT.
+    Pauses completely while is_executing is True.
+    """
+    global current_pan_speed, last_track_time
+
+    while True:
+        # Yield to trajectory executor
+        if is_executing:
+            await asyncio.sleep(0.01)
+            continue
+
+        # Timeout safety — kill speed if hub goes quiet
+        if time.time() - last_track_time > TRACK_TIMEOUT:
+            current_pan_speed = 0.0
+
+        speed = current_pan_speed
+        if abs(speed) < TRACK_DEADBAND:
+            await asyncio.sleep(0.01)
+            continue
+
+        # Set direction
+        GPIO.output(PAN_DIR, GPIO.HIGH if speed > 0 else GPIO.LOW)
+
+        # Pulse step pin
+        GPIO.output(PAN_STEP, GPIO.HIGH)
+        await asyncio.sleep(TRACK_PULSE_HIGH)
+        GPIO.output(PAN_STEP, GPIO.LOW)
+
+        # Speed → inter-pulse delay: 1.0 → TRACK_MIN_DELAY, ~0 → TRACK_MAX_DELAY
+        delay = TRACK_MAX_DELAY - abs(speed) * (TRACK_MAX_DELAY - TRACK_MIN_DELAY)
+        await asyncio.sleep(delay)
 
 
 # ── WebSocket Bridge ──────────────────────────────────────────────────────────
-
-event_queue = []  # compiled trajectory lives here between save and execute
-is_executing = False  # traffic-cop flag: True while GPIO trajectory is running
-
-
 async def listen_to_hub(uri: str, machine):
     """
-    Maintain a persistent WebSocket connection to the FastAPI hub and handle
-    incoming commands. Reconnects automatically on drop.
+    Maintain a persistent WebSocket connection to the FastAPI hub.
+    Reconnects automatically on drop.
 
-    Jog commands use Viam cloud (motor.set_power / motor.stop).
-    Trajectory execution uses the local GPIO busy-wait loop.
-    While is_executing is True, all jog commands are silently ignored.
+    Jog commands  → Viam cloud (slide only).
+    Track command → updates current_pan_speed for tracking_loop.
+    Trajectory    → GPIO busy-wait via execute_move().
     """
-    global event_queue, is_executing
+    global event_queue, is_executing, current_pan_speed, last_track_time
 
     slide_motor = Motor.from_robot(machine, SLIDE_MOTOR_NAME)
 
@@ -244,34 +265,32 @@ async def listen_to_hub(uri: str, machine):
                     if command == "save_trajectory":
                         print("📥  Trajectory received — compiling...")
                         event_queue = compile_trajectory(data)
-                        step_count = sum(1 for e in event_queue if e[0] == "step")
+                        step_count  = sum(1 for e in event_queue if e[0] == "step")
                         print(
-                            f"    Trajectory compiled and ready  "
-                            f"({len(event_queue):,} events, {step_count:,} step pulses)\n"
+                            f"    Compiled: {len(event_queue):,} events, "
+                            f"{step_count:,} step pulses\n"
                         )
 
                     elif command == "execute_move":
                         if not event_queue:
-                            print(
-                                "WARN: execute_move received but no trajectory loaded — ignoring.\n"
-                            )
+                            print("WARN: execute_move — no trajectory loaded, ignoring.\n")
                             continue
                         print("🚀  Executing move...\n")
                         is_executing = True
-                        execute_move(event_queue)  # blocks until motors finish
+                        execute_move(event_queue)   # blocks until done
                         is_executing = False
                         print("Done.\n")
                         await ws.send(json.dumps({"command": "trajectory_complete"}))
                         print("📡  Sent trajectory_complete to hub.\n")
 
-                    # ── Jog commands (Viam cloud) ─────────────────────────
+                    # ── Jog commands (Viam cloud — slide only) ────────────
                     elif command == "start_jog":
                         if is_executing:
                             print("WARN: jog ignored — trajectory is running.\n")
                             continue
-                        axis = data.get("axis", "")
+                        axis      = data.get("axis", "")
                         direction = float(data.get("direction", 0))
-                        power = 0.25 * -direction
+                        power     = 0.25 * -direction
                         print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
                         if axis == "slide":
                             await slide_motor.set_power(power, extra={"step_delay": 100})
@@ -288,11 +307,19 @@ async def listen_to_hub(uri: str, machine):
                         else:
                             print(f"WARN: unknown stop axis {axis!r}\n")
 
+                    # ── Tracking command (YOLO hub → raw GPIO pan) ────────
+                    elif command == "track":
+                        if is_executing:
+                            continue
+                        current_pan_speed = float(data.get("pan_speed", 0.0))
+                        last_track_time   = time.time()
+
                     else:
                         print(f"WARN: unknown command: {command!r}\n")
 
         except (OSError, websockets.exceptions.WebSocketException) as exc:
             print(f"Connection lost ({exc}) — retrying in 3 s...\n")
+            current_pan_speed = 0.0   # safety: stop pan if hub drops
             await asyncio.sleep(3)
 
 
@@ -300,6 +327,7 @@ async def listen_to_hub(uri: str, machine):
 async def main_async(uri: str):
     machine = await connect_viam()
     try:
+        asyncio.create_task(tracking_loop())
         await listen_to_hub(uri, machine)
     finally:
         await machine.close()

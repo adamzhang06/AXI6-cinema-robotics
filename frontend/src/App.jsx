@@ -166,8 +166,8 @@ function JogHome() {
   );
 }
 
-function LeftSidebar({ sendMessage, isExecuting }) {
-  const jogDisabled = isExecuting;
+function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
+  const jogDisabled = isExecuting || isTracking;
 
   const startJog = (axis, direction) =>
     sendMessage({ command: "start_jog", axis, direction, power: 0.5 });
@@ -319,9 +319,8 @@ function LeftSidebar({ sendMessage, isExecuting }) {
       <div className="mb-0.5">
         <span className="ctrl-label block mb-1.5">Operation Mode</span>
         <div className="mode-pill">
-          {/* active state toggled in a later chunk */}
-          <button className="mode-seg active">Trajectory</button>
-          <button className="mode-seg">Tracking</button>
+          <button className={`mode-seg${!isTracking ? " active" : ""}`} onClick={() => onSetTracking(false)}>Trajectory</button>
+          <button className={`mode-seg${isTracking ? " active" : ""}`}  onClick={() => onSetTracking(true)}>Tracking</button>
         </div>
       </div>
     </div>
@@ -331,7 +330,7 @@ function LeftSidebar({ sendMessage, isExecuting }) {
 // ─────────────────────────────────────────────────────────────────
 // VIEWPORT  (shows logo placeholder or live MJPEG stream)
 // ─────────────────────────────────────────────────────────────────
-function Viewport({ isCameraActive }) {
+function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -395,10 +394,18 @@ function Viewport({ isCameraActive }) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0);
-    const jpeg = canvas.toDataURL("image/jpeg", 0.8);
-    // TODO: send via WebSocket e.g. sendMessage({ command: "frame", data: jpeg })
-    console.log("📸 Captured frame (Base64 JPEG):", jpeg.slice(0, 80) + "…");
+    return canvas.toDataURL("image/jpeg", 0.5);
   };
+
+  // Continuously send frames to the hub while tracking mode is active
+  useEffect(() => {
+    if (!isTracking || !isCameraActive) return;
+    const id = setInterval(() => {
+      const frame = captureFrame();
+      if (frame) sendMessage({ command: "process_frame", frame });
+    }, 100); // ~10 fps — enough for proportional control without flooding the hub
+    return () => clearInterval(id);
+  }, [isTracking, isCameraActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="bg-[var(--bg-main)] flex flex-col p-2 relative min-h-0 min-w-0">
@@ -464,6 +471,45 @@ function Viewport({ isCameraActive }) {
 
         {/* Hidden canvas for frame capture */}
         <canvas ref={canvasRef} className="hidden" />
+
+        {/* YOLO tracking overlay */}
+        {trackingOverlay && trackingOverlay.img_w > 0 && (
+          <svg
+            className="absolute inset-0 w-full h-full pointer-events-none"
+            viewBox={`0 0 ${trackingOverlay.img_w} ${trackingOverlay.img_h}`}
+            preserveAspectRatio="xMidYMid meet"
+          >
+            {/* Deadzone band */}
+            <rect
+              x={trackingOverlay.img_w / 2 - trackingOverlay.deadzone_px}
+              y={0}
+              width={trackingOverlay.deadzone_px * 2}
+              height={trackingOverlay.img_h}
+              fill="rgba(255,213,0,0.04)"
+              stroke="rgba(255,213,0,0.25)"
+              strokeWidth="1"
+              strokeDasharray="6 4"
+            />
+            {/* Detection boxes */}
+            {trackingOverlay.detections.map((det, i) => (
+              <g key={i}>
+                <rect
+                  x={det.x1} y={det.y1}
+                  width={det.x2 - det.x1} height={det.y2 - det.y1}
+                  fill="none"
+                  stroke={det.is_target ? "#FFD500" : "rgba(255,255,255,0.35)"}
+                  strokeWidth={det.is_target ? 3 : 1.5}
+                />
+                {det.is_target && (
+                  <>
+                    <rect x={det.x1} y={det.y1 - 26} width={110} height={22} fill="#FFD500" />
+                    <text x={det.x1 + 6} y={det.y1 - 9} fill="#000" fontSize="16" fontWeight="bold" fontFamily="monospace">TRACKING</text>
+                  </>
+                )}
+              </g>
+            ))}
+          </svg>
+        )}
       </div>
     </div>
   );
@@ -1722,8 +1768,13 @@ export default function App() {
   const [waypointsByTrack, setWaypointsByTrack] = useState({});
   const [primarySelection, setPrimarySelection] = useState(null); // { trackId, frame } | null
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isTracking, setIsTracking] = useState(false);
+  const [trackingOverlay, setTrackingOverlay] = useState(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [durationS, setDurationS] = useState(FALLBACK_DURATION_S);
+
+  // Clear overlay when tracking mode is turned off
+  useEffect(() => { if (!isTracking) setTrackingOverlay(null); }, [isTracking]);
 
   const loadPreset = (preset) => {
     setDurationS(preset.durationS);
@@ -1731,6 +1782,7 @@ export default function App() {
   };
   const { connectionStatus, piStatus, sendMessage } = useAXI6Socket({
     onTrajectoryComplete: () => setIsExecuting(false),
+    onTrackingOverlay: setTrackingOverlay,
   });
 
   const handleWaypointsChange = (trackId, waypoints) => {
@@ -1751,8 +1803,8 @@ export default function App() {
         {/* Center: top (controls + viewport) and bottom (timeline) */}
         <div className="grid grid-rows-[1fr_1fr] gap-[2px]">
           <div className="grid grid-cols-[320px_1fr] gap-[2px]">
-            <LeftSidebar sendMessage={sendMessage} isExecuting={isExecuting} />
-            <Viewport isCameraActive={isCameraActive} />
+            <LeftSidebar sendMessage={sendMessage} isExecuting={isExecuting} isTracking={isTracking} onSetTracking={setIsTracking} />
+            <Viewport isCameraActive={isCameraActive} isTracking={isTracking} sendMessage={sendMessage} trackingOverlay={trackingOverlay} />
           </div>
           <Timeline
             currentFrame={currentFrame}

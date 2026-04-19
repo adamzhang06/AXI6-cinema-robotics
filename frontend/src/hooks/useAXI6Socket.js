@@ -2,12 +2,14 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const WS_URL = "ws://localhost:8000/ws/ui";
 
-export function useAXI6Socket({ onTrajectoryComplete } = {}) {
+export function useAXI6Socket({ onTrajectoryComplete, onTrackingOverlay } = {}) {
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [piStatus, setPiStatus] = useState("disconnected");
   const wsRef = useRef(null);
   const onTrajectoryCompleteRef = useRef(onTrajectoryComplete);
+  const onTrackingOverlayRef = useRef(onTrackingOverlay);
   useEffect(() => { onTrajectoryCompleteRef.current = onTrajectoryComplete; }, [onTrajectoryComplete]);
+  useEffect(() => { onTrackingOverlayRef.current = onTrackingOverlay; }, [onTrackingOverlay]);
 
   const sendMessage = useCallback((payload) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -46,6 +48,8 @@ export function useAXI6Socket({ onTrajectoryComplete } = {}) {
             setPiStatus(data.status);
           } else if (data.command === "trajectory_complete") {
             onTrajectoryCompleteRef.current?.();
+          } else if (data.command === "tracking_overlay") {
+            onTrackingOverlayRef.current?.(data);
           }
         } catch {
           /* noop */
