@@ -4,6 +4,7 @@ import CurveEditor, { TimelineRuler } from "./components/CurveEditor";
 import { TRACKS } from "./constants/tracks";
 import { useAXI6Socket } from "./hooks/useAXI6Socket";
 import { bakeTrajectory } from "./utils/trajectoryBaker";
+import { CINEMATIC_PRESETS } from "./constants/TimelinePresets";
 
 // ─────────────────────────────────────────────────────────────────
 // TIMECODE HELPERS
@@ -63,7 +64,11 @@ function BarDivider({ className = "" }) {
 function Navbar() {
   return (
     <div className="bg-[var(--bg-main-light)] flex items-center px-3 w-full">
-      <img src="/src/assets/logo.png" alt="AXIS Slider" className="h-6 w-auto object-contain" />
+      <img
+        src="/src/assets/logo.png"
+        alt="AXIS Slider"
+        className="h-6 w-auto object-contain"
+      />
     </div>
   );
 }
@@ -77,9 +82,11 @@ function Toolbar({ onToggleCamera, isCameraActive }) {
       {/* Camera toggle */}
       <button
         className={`w-10 h-10 flex items-center justify-center rounded-lg transition-colors
-                    ${isCameraActive
-                      ? "text-[#FFD500] bg-white/15"
-                      : "text-white/50 hover:text-white hover:bg-white/10"}`}
+                    ${
+                      isCameraActive
+                        ? "text-[#FFD500] bg-white/15"
+                        : "text-white/50 hover:text-white hover:bg-white/10"
+                    }`}
         title="Toggle Camera"
         onClick={onToggleCamera}
       >
@@ -107,7 +114,16 @@ function Toolbar({ onToggleCamera, isCameraActive }) {
 // ─────────────────────────────────────────────────────────────────
 
 /** Single directional wedge button inside a joystick widget. */
-function JogWedge({ style, children, disabled, onMouseDown, onMouseUp, onMouseLeave, onTouchStart, onTouchEnd }) {
+function JogWedge({
+  style,
+  children,
+  disabled,
+  onMouseDown,
+  onMouseUp,
+  onMouseLeave,
+  onTouchStart,
+  onTouchEnd,
+}) {
   return (
     <button
       className={`joystick-wedge ${disabled ? "opacity-30 cursor-not-allowed" : ""}`}
@@ -155,17 +171,14 @@ function LeftSidebar({ sendMessage, isExecuting }) {
 
   const startJog = (axis, direction) =>
     sendMessage({ command: "start_jog", axis, direction, power: 0.5 });
-  const stopJog = (axis) =>
-    sendMessage({ command: "stop_jog", axis });
+  const stopJog = (axis) => sendMessage({ command: "stop_jog", axis });
 
   return (
     <div className="bg-[var(--bg-main)] flex flex-col p-2 overflow-hidden">
       <h2 className="panel-header mb-2">Robot Controls</h2>
 
       {/* ── Jog D-pads ─────────────────────────────────────────── */}
-      <span className="ctrl-label">
-        Jog{isExecuting ? " — EXECUTING" : ""}
-      </span>
+      <span className="ctrl-label">Jog{isExecuting ? " — EXECUTING" : ""}</span>
       <div className="flex gap-3 justify-center mt-[6px]">
         {/* Slide joystick (horizontal only) */}
         <div className="text-center">
@@ -180,7 +193,12 @@ function LeftSidebar({ sendMessage, isExecuting }) {
                 onTouchStart={() => startJog("slide", -1)}
                 onTouchEnd={() => stopJog("slide")}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                >
                   <path d="M15 19l-7-7 7-7" />
                 </svg>
               </JogWedge>
@@ -193,7 +211,12 @@ function LeftSidebar({ sendMessage, isExecuting }) {
                 onTouchStart={() => startJog("slide", 1)}
                 onTouchEnd={() => stopJog("slide")}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                >
                   <path d="M9 5l7 7-7 7" />
                 </svg>
               </JogWedge>
@@ -312,25 +335,49 @@ function Viewport({ isCameraActive }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const [streamRes, setStreamRes] = useState(null); // "1920×1080" etc.
 
   useEffect(() => {
     if (isCameraActive) {
-      navigator.mediaDevices
-        .getUserMedia({ video: true })
-        .then((stream) => {
+      const startCamera = async () => {
+        try {
+          // Enumerate devices; pick HDMI/capture card if present, else default
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoDevices = devices.filter((d) => d.kind === "videoinput");
+          const hdmiDevice = videoDevices.find((d) =>
+            /hdmi|capture|cam link|elgato|magewell|blackmagic|avermedia/i.test(
+              d.label,
+            ),
+          );
+          const videoConstraints = {
+            width:      { ideal: 3840 },
+            height:     { ideal: 2160 },
+            resizeMode: "none", // deliver frames at native capture size, no browser rescaling
+          };
+          const constraints = hdmiDevice
+            ? { video: { deviceId: { exact: hdmiDevice.deviceId }, ...videoConstraints } }
+            : { video: videoConstraints };
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
           streamRef.current = stream;
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
-            videoRef.current.play();
+            await videoRef.current.play();
+            // Report the actual negotiated resolution
+            const { width, height } = stream.getVideoTracks()[0].getSettings();
+            setStreamRes(`${width}×${height}`);
           }
-        })
-        .catch((err) => console.warn("Camera access failed:", err));
+        } catch (err) {
+          console.warn("Camera access failed:", err);
+        }
+      };
+      startCamera();
     } else {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
       }
       if (videoRef.current) videoRef.current.srcObject = null;
+      setStreamRes(null);
     }
 
     return () => {
@@ -362,6 +409,7 @@ function Viewport({ isCameraActive }) {
                     ${isCameraActive ? "" : "hidden"}`}
       >
         <h2 className="panel-header mb-0">CAMERA</h2>
+        {streamRes && <span className="text-[10px] text-white/50 tabular-nums">{streamRes}</span>}
         <div className="w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_8px_#dc2626] animate-cam-pulse" />
       </div>
 
@@ -381,13 +429,29 @@ function Viewport({ isCameraActive }) {
         className="w-full bg-[var(--bg-lighter)] rounded flex-1 overflow-hidden
                    relative min-h-0 min-w-0 flex items-center justify-center"
       >
-        {/* Static logo — hidden when camera is active */}
-        <img
-          src="/axi6_wide_logo_crop.jpeg"
-          alt="AXI6 Logo"
-          className={`absolute inset-0 w-full h-full object-cover pointer-events-none select-none
-                      ${isCameraActive ? "hidden" : ""}`}
-        />
+        {/* Camera-off prompt */}
+        {!isCameraActive && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 pointer-events-none select-none">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="64"
+              height="64"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.25"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="text-white/20"
+            >
+              <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
+              <circle cx="12" cy="13" r="3" />
+            </svg>
+            <p className="text-white/30 text-sm tracking-wide">
+              Press the camera button to enable the live feed
+            </p>
+          </div>
+        )}
 
         {/* Live webcam feed */}
         <video
@@ -535,6 +599,8 @@ function Timeline({
   waypointsByTrack,
   sendMessage,
   onExecute,
+  durationS,
+  onSetDuration,
 }) {
   const tracks = TRACKS_INFO;
 
@@ -547,7 +613,8 @@ function Timeline({
     const handleKeyDown = (e) => {
       if (e.key === "Shift") setIsShiftDown(true);
       if ((e.metaKey || e.ctrlKey) && e.key === "a") {
-        if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+        if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")
+          return;
         e.preventDefault();
         if (activeTrack) curveEditorRef.current?.selectAllOnTrack(activeTrack);
       }
@@ -571,8 +638,13 @@ function Timeline({
     });
 
   // ── Duration & scrubber state ─────────────────────────────────
-  const [durationS, setDurationS] = useState(FALLBACK_DURATION_S);
-  const [durationInput, setDurationInput] = useState(`${FALLBACK_DURATION_S}s`);
+  // durationS comes from the App root; keep a local string for the text input
+  const [durationInput, setDurationInput] = useState(`${durationS}s`);
+
+  // Sync the text input whenever a preset changes durationS from outside
+  useEffect(() => {
+    setDurationInput(`${durationS}s`);
+  }, [durationS]);
   const [isPlaying, setIsPlaying] = useState("paused"); // 'forward' | 'reverse' | 'paused'
   const [isSnapping, setIsSnapping] = useState(true);
 
@@ -689,7 +761,8 @@ function Timeline({
 
   // Pause automatically when playhead hits a boundary.
   useEffect(() => {
-    if (isPlaying === "forward" && currentFrame >= maxFrame) setIsPlaying("paused"); // eslint-disable-line react-hooks/set-state-in-effect
+    if (isPlaying === "forward" && currentFrame >= maxFrame)
+      setIsPlaying("paused"); // eslint-disable-line react-hooks/set-state-in-effect
     if (isPlaying === "reverse" && currentFrame <= 0) setIsPlaying("paused");
   }, [currentFrame, isPlaying, maxFrame]);
 
@@ -698,7 +771,7 @@ function Timeline({
     if (!viewportRef.current || isScrubbing.current) return;
     const x = (currentFrame / maxFrame) * canvasWidth;
     const { scrollLeft, clientWidth } = viewportRef.current;
-    
+
     if (isPlaying !== "paused") {
       // Playback scrolling (jump ahead)
       if (x > scrollLeft + clientWidth - 80) {
@@ -718,15 +791,18 @@ function Timeline({
   useEffect(() => {
     if (pendingZoomScrollRef.current === null || !viewportRef.current) return;
     const newPlayheadX = (currentFrame / maxFrame) * canvasWidth;
-    viewportRef.current.scrollLeft = Math.max(0, newPlayheadX - pendingZoomScrollRef.current);
+    viewportRef.current.scrollLeft = Math.max(
+      0,
+      newPlayheadX - pendingZoomScrollRef.current,
+    );
     pendingZoomScrollRef.current = null;
   }, [canvasWidth]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleViewportWheel = (e) => {
     e.preventDefault();
     if (!viewportRef.current) return;
-    const playheadX    = (currentFrame / maxFrame) * canvasWidth;
-    const screenPos    = playheadX - viewportRef.current.scrollLeft;
+    const playheadX = (currentFrame / maxFrame) * canvasWidth;
+    const screenPos = playheadX - viewportRef.current.scrollLeft;
     pendingZoomScrollRef.current = screenPos;
     const delta = -e.deltaY * 0.12;
     setZoomSlider((prev) => Math.max(0, Math.min(100, prev + delta)));
@@ -737,11 +813,11 @@ function Timeline({
     const parsed = parseInt(rawDigits, 10);
 
     if (isNaN(parsed) || parsed <= 0) {
-      setDurationS(FALLBACK_DURATION_S);
+      onSetDuration(FALLBACK_DURATION_S);
       setDurationInput(`${FALLBACK_DURATION_S}s`);
     } else {
       const clamped = Math.max(1, Math.min(3600, parsed));
-      setDurationS(clamped);
+      onSetDuration(clamped);
       setDurationInput(`${clamped}s`);
     }
   };
@@ -810,7 +886,14 @@ function Timeline({
 
   const handleSave = () => {
     const laneHeight = curveEditorRef.current?.getLaneHeight() ?? 100;
-    const bakedData  = bakeTrajectory(waypointsByTrack, durationS, TRACKS, CINEMATIC_FPS, laneHeight, hiddenTracks);
+    const bakedData = bakeTrajectory(
+      waypointsByTrack,
+      durationS,
+      TRACKS,
+      CINEMATIC_FPS,
+      laneHeight,
+      hiddenTracks,
+    );
     const success = sendMessage({
       sender: "ui",
       command: "save_trajectory",
@@ -1105,18 +1188,32 @@ function Timeline({
                   ),
                 },
               ].map(({ title, type, icon }) => {
-                const activeColor = TRACKS_INFO.find(t => t.id === activeTrack)?.color || "#ffffff";
+                const activeColor =
+                  TRACKS_INFO.find((t) => t.id === activeTrack)?.color ||
+                  "#ffffff";
                 const isHighlight = isShiftDown && activeTrack;
-                
+
                 return (
                   <button
                     key={title}
                     title={title}
                     onClick={(e) => {
                       if (!e.shiftKey && !hasSelection) return;
-                      curveEditorRef.current?.applyEasing(type, e.shiftKey, activeTrack);
+                      curveEditorRef.current?.applyEasing(
+                        type,
+                        e.shiftKey,
+                        activeTrack,
+                      );
                     }}
-                    style={isHighlight ? { borderColor: activeColor, boxShadow: `0 0 8px ${activeColor}40`, color: activeColor } : {}}
+                    style={
+                      isHighlight
+                        ? {
+                            borderColor: activeColor,
+                            boxShadow: `0 0 8px ${activeColor}40`,
+                            color: activeColor,
+                          }
+                        : {}
+                    }
                     className={`w-7 h-7 flex items-center justify-center rounded border transition-all duration-200 ${
                       isHighlight
                         ? "bg-neutral-900 cursor-pointer"
@@ -1149,17 +1246,27 @@ function Timeline({
           <div className="flex items-center gap-1.5 ml-3">
             <div
               className={`flex items-center justify-center w-[110px] h-7 rounded border bg-[#252528] ${
-                saveStatus === "saved" ? "border-green-400/20" : 
-                saveStatus === "error" ? "border-red-500/30 bg-red-500/10" : "border-white/5"
+                saveStatus === "saved"
+                  ? "border-green-400/20"
+                  : saveStatus === "error"
+                    ? "border-red-500/30 bg-red-500/10"
+                    : "border-white/5"
               }`}
             >
               <span
                 className={`text-[10px] font-bold tracking-wide whitespace-nowrap ${
-                  saveStatus === "saved" ? "text-green-400" : 
-                  saveStatus === "error" ? "text-red-500" : "text-[#FFD500]/70"
+                  saveStatus === "saved"
+                    ? "text-green-400"
+                    : saveStatus === "error"
+                      ? "text-red-500"
+                      : "text-[#FFD500]/70"
                 }`}
               >
-                {saveStatus === "saved" ? "Saved" : saveStatus === "error" ? "Error" : "Unsaved Changes"}
+                {saveStatus === "saved"
+                  ? "Saved"
+                  : saveStatus === "error"
+                    ? "Error"
+                    : "Unsaved Changes"}
               </span>
             </div>
             <button
@@ -1213,7 +1320,10 @@ function Timeline({
               isLocked={lockedTracks.has(t.id)}
               isHidden={hiddenTracks.has(t.id)}
               onToggleLock={() => toggle(setLockedTracks, t.id)}
-              onToggleHide={() => { toggle(setHiddenTracks, t.id); setSaveStatus("unsaved"); }}
+              onToggleHide={() => {
+                toggle(setHiddenTracks, t.id);
+                setSaveStatus("unsaved");
+              }}
             />
           ))}
         </div>
@@ -1305,22 +1415,29 @@ function RightSidebar({
   primarySelection,
   connectionStatus,
   piStatus,
+  loadPreset,
 }) {
   const trackInfo = TRACKS_INFO.find((t) => t.id === activeTrack) ?? null;
   const activeWps = activeTrack ? (waypointsByTrack[activeTrack] ?? []) : [];
 
   // Compute physical value of the primary selected waypoint
-  const primaryWp      = primarySelection
-    ? (waypointsByTrack[primarySelection.trackId] ?? []).find((wp) => wp.frame === primarySelection.frame)
+  const primaryWp = primarySelection
+    ? (waypointsByTrack[primarySelection.trackId] ?? []).find(
+        (wp) => wp.frame === primarySelection.frame,
+      )
     : null;
-  const primaryTrack   = primarySelection ? TRACKS.find((t) => t.id === primarySelection.trackId) : null;
-  const laneHeight     = curveEditorRef.current?.getLaneHeight() ?? 100;
-  const physicalValue  = primaryWp && primaryTrack
-    ? primaryTrack.max - (primaryWp.y / laneHeight) * (primaryTrack.max - primaryTrack.min)
+  const primaryTrack = primarySelection
+    ? TRACKS.find((t) => t.id === primarySelection.trackId)
     : null;
+  const laneHeight = curveEditorRef.current?.getLaneHeight() ?? 100;
+  const physicalValue =
+    primaryWp && primaryTrack
+      ? primaryTrack.max -
+        (primaryWp.y / laneHeight) * (primaryTrack.max - primaryTrack.min)
+      : null;
 
-  const [valueInput,    setValueInput]    = useState("");
-  const [editingValue,  setEditingValue]  = useState(false);
+  const [valueInput, setValueInput] = useState("");
+  const [editingValue, setEditingValue] = useState(false);
 
   useEffect(() => {
     if (!editingValue) {
@@ -1332,8 +1449,15 @@ function RightSidebar({
     setEditingValue(false);
     const parsed = parseFloat(valueInput);
     if (isNaN(parsed) || !primarySelection || !primaryTrack) return;
-    const clamped = Math.max(primaryTrack.min, Math.min(primaryTrack.max, parsed));
-    curveEditorRef.current?.setWaypointPhysical(primarySelection.trackId, primarySelection.frame, clamped);
+    const clamped = Math.max(
+      primaryTrack.min,
+      Math.min(primaryTrack.max, parsed),
+    );
+    curveEditorRef.current?.setWaypointPhysical(
+      primarySelection.trackId,
+      primarySelection.frame,
+      clamped,
+    );
     setValueInput(clamped.toFixed(2));
   };
   const hasAtFrame = activeWps.some((wp) => wp.frame === currentFrame);
@@ -1471,16 +1595,29 @@ function RightSidebar({
         </div>
 
         {/* Selected waypoint value input */}
-        <div className={`mt-3 transition-opacity duration-200 ${!primaryWp ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
+        <div
+          className={`mt-3 transition-opacity duration-200 ${!primaryWp ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+        >
           <span className="text-[9px] text-white/30 uppercase tracking-widest font-bold block mb-1.5">
             Selected Value{primaryTrack ? ` (${primaryTrack.unit})` : ""}
           </span>
           <input
             type="text"
             value={valueInput}
-            onChange={(e) => { setEditingValue(true); setValueInput(e.target.value); }}
+            onChange={(e) => {
+              setEditingValue(true);
+              setValueInput(e.target.value);
+            }}
             onBlur={commitValue}
-            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") { setEditingValue(false); setValueInput(physicalValue !== null ? physicalValue.toFixed(2) : ""); } }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.target.blur();
+              if (e.key === "Escape") {
+                setEditingValue(false);
+                setValueInput(
+                  physicalValue !== null ? physicalValue.toFixed(2) : "",
+                );
+              }
+            }}
             className="w-full bg-neutral-950 border border-white/10 rounded px-2 py-1
                        text-[11px] text-white/80 text-center
                        shadow-[inset_0_2px_4px_rgba(0,0,0,0.4)]
@@ -1510,6 +1647,29 @@ function RightSidebar({
         <span className="text-sm text-white font-bold opacity-90 tracking-wide">
           Tracking Mode Active
         </span>
+      </div>
+
+      {/* ── Cinematic Presets ─────────────────────────────────── */}
+      <div className="mt-4">
+        <span className="text-[9px] text-white/30 uppercase tracking-widest font-bold block mb-2">
+          Cinematic Presets
+        </span>
+        <div className="flex flex-col gap-1">
+          {CINEMATIC_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              onClick={() => loadPreset(preset)}
+              className="w-full text-left px-2.5 py-1.5 rounded bg-[#252528] border border-white/[0.06]
+                         text-[11px] text-white/60 hover:text-white hover:bg-[#2e2e32]
+                         hover:border-white/15 transition-colors flex items-center justify-between group"
+            >
+              <span>{preset.name}</span>
+              <span className="text-[10px] text-white/25 group-hover:text-white/40 tabular-nums">
+                {preset.durationS}s
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Push connection bar to the bottom */}
@@ -1543,8 +1703,7 @@ function RightSidebar({
               }`}
             />
             <span className="text-[9px] font-semibold tracking-[0.06em] text-white/35 uppercase whitespace-nowrap">
-              Backend:{" "}
-              {connectionStatus === "connected" ? "OK" : "OFF"}
+              Backend: {connectionStatus === "connected" ? "OK" : "OFF"}
             </span>
           </div>
         </div>
@@ -1561,9 +1720,15 @@ export default function App() {
   const [currentFrame, setCurrentFrame] = useState(0);
   const [activeTrack, setActiveTrack] = useState(null);
   const [waypointsByTrack, setWaypointsByTrack] = useState({});
-  const [primarySelection,  setPrimarySelection]  = useState(null); // { trackId, frame } | null
+  const [primarySelection, setPrimarySelection] = useState(null); // { trackId, frame } | null
   const [isExecuting, setIsExecuting] = useState(false);
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [durationS, setDurationS] = useState(FALLBACK_DURATION_S);
+
+  const loadPreset = (preset) => {
+    setDurationS(preset.durationS);
+    curveEditorRef.current?.loadPreset(preset.tracks);
+  };
   const { connectionStatus, piStatus, sendMessage } = useAXI6Socket({
     onTrajectoryComplete: () => setIsExecuting(false),
   });
@@ -1578,7 +1743,10 @@ export default function App() {
 
       {/* Three-column workspace */}
       <div className="grid grid-cols-[50px_1fr_300px] gap-[2px] h-full overflow-hidden">
-        <Toolbar onToggleCamera={() => setIsCameraActive((v) => !v)} isCameraActive={isCameraActive} />
+        <Toolbar
+          onToggleCamera={() => setIsCameraActive((v) => !v)}
+          isCameraActive={isCameraActive}
+        />
 
         {/* Center: top (controls + viewport) and bottom (timeline) */}
         <div className="grid grid-rows-[1fr_1fr] gap-[2px]">
@@ -1597,6 +1765,8 @@ export default function App() {
             waypointsByTrack={waypointsByTrack}
             sendMessage={sendMessage}
             onExecute={setIsExecuting}
+            durationS={durationS}
+            onSetDuration={setDurationS}
           />
         </div>
 
@@ -1609,6 +1779,7 @@ export default function App() {
           primarySelection={primarySelection}
           connectionStatus={connectionStatus}
           piStatus={piStatus}
+          loadPreset={loadPreset}
         />
       </div>
     </div>

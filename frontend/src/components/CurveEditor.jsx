@@ -419,6 +419,11 @@ function TrackSVG({
 
       onUpdateWaypoints(clampHandles(newWaypoints), newSelectedFrames);
 
+      // Keep primarySelection.frame in sync so the sidebar shows live Y values
+      const origPrimaryFrame = initialWaypoints[idx].frame;
+      const isEndpoint = origPrimaryFrame === 0 || origPrimaryFrame === maxFrame;
+      onSetPrimary(isEndpoint ? origPrimaryFrame : origPrimaryFrame + finalDFrame);
+
     } else if (marqueeStartRef.current) {
       const { x: x0, y: y0 } = marqueeStartRef.current;
       if (Math.hypot(x - x0, y - y0) > MARQUEE_THRESHOLD) setMarquee({ x0, y0, x1: x, y1: y });
@@ -471,6 +476,7 @@ function TrackSVG({
     const newY  = Math.max(0, Math.min(laneHeight, y));
     const nextWaypoints = [...waypoints, { frame, y: newY, handleIn: null, handleOut: null }].sort((a, b) => a.frame - b.frame);
     onUpdateWaypoints(clampHandles(nextWaypoints));
+    onMarqueeSelect([{ trackId: track.id, frame }], true);
     onSetPrimary(frame);
     onSetActiveTrack?.();
   };
@@ -640,14 +646,16 @@ const CurveEditor = forwardRef(function CurveEditor({
   const [primarySelection,  setPrimarySelection]  = useState(null); // { trackId, frame } | null
 
   // Always-current refs for use inside stable event handlers
-  const pastStatesRef      = useRef([]);
-  const trackDataRef       = useRef(trackData);
-  const maxFrameRef        = useRef(maxFrame);
-  const primarySelRef      = useRef(primarySelection);
+  const pastStatesRef           = useRef([]);
+  const trackDataRef            = useRef(trackData);
+  const maxFrameRef             = useRef(maxFrame);
+  const primarySelRef           = useRef(primarySelection);
+  const selectedWaypointsRef    = useRef(selectedWaypoints);
 
-  useEffect(() => { trackDataRef.current  = trackData; });
-  useEffect(() => { maxFrameRef.current   = maxFrame;  }, [maxFrame]);
-  useEffect(() => { primarySelRef.current = primarySelection; }, [primarySelection]);
+  useEffect(() => { trackDataRef.current         = trackData; });
+  useEffect(() => { maxFrameRef.current          = maxFrame;  }, [maxFrame]);
+  useEffect(() => { primarySelRef.current        = primarySelection; }, [primarySelection]);
+  useEffect(() => { selectedWaypointsRef.current = selectedWaypoints; }, [selectedWaypoints]);
 
   const pushHistory = () => {
     pastStatesRef.current = [
@@ -670,19 +678,20 @@ const CurveEditor = forwardRef(function CurveEditor({
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
 
       if (e.key === "Delete" || e.key === "Backspace") {
-        const ps = primarySelRef.current;
-        if (!ps) return;
-        const { trackId, frame } = ps;
-        if (frame === 0 || frame === maxFrameRef.current) return;
+        const toDelete = selectedWaypointsRef.current.filter(
+          ({ frame }) => frame !== 0 && frame !== maxFrameRef.current
+        );
+        if (toDelete.length === 0) return;
         e.preventDefault();
         pushHistory();
         setTrackData((td) => {
-          const wps = td[trackId] ?? [];
-          return { ...td, [trackId]: clampHandles(wps.filter((wp) => wp.frame !== frame)) };
+          const updated = { ...td };
+          for (const { trackId, frame } of toDelete) {
+            updated[trackId] = clampHandles((updated[trackId] ?? []).filter((wp) => wp.frame !== frame));
+          }
+          return updated;
         });
-        setSelectedWaypoints((prev) =>
-          prev.filter((s) => !(s.trackId === trackId && s.frame === frame))
-        );
+        setSelectedWaypoints([]);
         setPrimarySelection(null);
       }
 
@@ -917,6 +926,37 @@ const CurveEditor = forwardRef(function CurveEditor({
 
     getLaneHeight() {
       return laneHeights[0] ?? 100;
+    },
+
+    loadPreset(tracksPhysical) {
+      pushHistory();
+      setTrackData(() => {
+        const next = {};
+        for (const track of TRACKS) {
+          const wpsPhysical = tracksPhysical[track.id] ?? [];
+          const trackIdx    = TRACKS.findIndex((t) => t.id === track.id);
+          const lh          = laneHeights[trackIdx] ?? 100;
+          const range       = track.max - track.min;
+
+          const wps = wpsPhysical.map((wp) => {
+            const pixelY = ((track.max - wp.value) / range) * lh;
+            const cvtH   = (hSpec) => hSpec
+              ? { dFrame: hSpec.dFrame, dY: -(hSpec.dPhysical / range) * lh }
+              : null;
+            return {
+              frame:     wp.frame,
+              y:         Math.max(0, Math.min(lh, pixelY)),
+              handleIn:  cvtH(wp.handleIn),
+              handleOut: cvtH(wp.handleOut),
+            };
+          });
+
+          next[track.id] = clampHandles(wps.sort((a, b) => a.frame - b.frame));
+        }
+        return next;
+      });
+      setSelectedWaypoints([]);
+      setPrimarySelection(null);
     },
   }), [primarySelection, selectedWaypoints, maxFrame, trackData, laneHeights]);
 
