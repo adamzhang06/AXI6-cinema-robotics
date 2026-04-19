@@ -170,11 +170,8 @@ function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
   const jogDisabled = isExecuting; // tracking active is still allowed to jog
   const [jogSpeed, setJogSpeed] = useState(50); // 1–100 %
 
-  // 1% → 500 µs delay (slow), 100% → 1 µs delay (fast)
-  const stepDelay = Math.round(500 - (jogSpeed - 1) * (499 / 99));
-
   const startJog = (axis, direction) =>
-    sendMessage({ command: "start_jog", axis, direction, power: 0.5, step_delay: stepDelay });
+    sendMessage({ command: "start_jog", axis, direction, power: jogSpeed / 100 });
   const stopJog = (axis) => sendMessage({ command: "stop_jog", axis });
 
   return (

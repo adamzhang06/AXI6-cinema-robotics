@@ -27,7 +27,7 @@ app.add_middleware(
 _MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolov8-face.pt")
 model = YOLO(_MODEL_PATH)
 
-TRACKING_KP = 0.002  # proportional gain: pixels of error → pan speed
+TRACKING_KP = 0.003  # proportional gain: pixels of error → pan speed
 DEADZONE_PX = 80  # pixels from centre with no pan output
 
 

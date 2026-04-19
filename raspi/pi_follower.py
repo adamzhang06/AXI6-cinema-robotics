@@ -292,13 +292,12 @@ async def listen_to_hub(uri: str, machine):
                         if is_executing:
                             print("WARN: jog ignored — trajectory is running.\n")
                             continue
-                        axis       = data.get("axis", "")
-                        direction  = float(data.get("direction", 0))
-                        power      = 0.25 * -direction
-                        step_delay = int(data.get("step_delay", 100))
-                        print(f"🕹  start_jog  axis={axis}  power={power:.2f}  step_delay={step_delay}µs")
+                        axis      = data.get("axis", "")
+                        direction = float(data.get("direction", 0))
+                        power     = float(data.get("power", 0.25)) * -direction
+                        print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
                         if axis == "slide":
-                            await slide_motor.set_power(power, extra={"step_delay": step_delay})
+                            await slide_motor.set_power(power, extra={"step_delay": 100})
                         else:
                             print(f"WARN: unknown jog axis {axis!r}\n")
 
