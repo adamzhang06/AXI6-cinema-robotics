@@ -2,10 +2,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const WS_URL = "ws://localhost:8000/ws/ui";
 
-export function useAXI6Socket() {
+export function useAXI6Socket({ onTrajectoryComplete } = {}) {
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [piStatus, setPiStatus] = useState("disconnected");
   const wsRef = useRef(null);
+  const onTrajectoryCompleteRef = useRef(onTrajectoryComplete);
+  useEffect(() => { onTrajectoryCompleteRef.current = onTrajectoryComplete; }, [onTrajectoryComplete]);
 
   const sendMessage = useCallback((payload) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -42,6 +44,8 @@ export function useAXI6Socket() {
           const data = JSON.parse(event.data);
           if (data.command === "pi_status") {
             setPiStatus(data.status);
+          } else if (data.command === "trajectory_complete") {
+            onTrajectoryCompleteRef.current?.();
           }
         } catch {
           /* noop */

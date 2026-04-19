@@ -30,6 +30,26 @@ import time
 import RPi.GPIO as GPIO
 import websockets
 from dotenv import load_dotenv
+from viam.robot.client import RobotClient
+from viam.components.motor import Motor
+
+# ── Viam Cloud ───────────────────────────────────────────────────────────────
+VIAM_API_KEY    = "rrlkbr70e4rmzm1p91eeyum9tzq559qr"
+VIAM_API_KEY_ID = "4d649e48-b9b9-4551-9890-d3bcfe640d4a"
+VIAM_ADDRESS    = "axi6-main.40ro1hz53b.viam.cloud"
+SLIDE_MOTOR_NAME = "slide"
+
+
+async def connect_viam():
+    opts = RobotClient.Options.with_api_key(
+        api_key=VIAM_API_KEY,
+        api_key_id=VIAM_API_KEY_ID,
+    )
+    print("Connecting to Viam cloud...")
+    machine = await RobotClient.at_address(VIAM_ADDRESS, opts)
+    print("✅  Viam connected.\n")
+    return machine
+
 
 # ── Slide Pins (BCM) ──────────────────────────────────────────────────────────
 SLIDE_EN = 14
@@ -189,15 +209,22 @@ def execute_move(event_queue):
 
 # ── WebSocket Bridge ──────────────────────────────────────────────────────────
 
-event_queue = []  # compiled trajectory lives here between save and execute
+event_queue = []   # compiled trajectory lives here between save and execute
+is_executing = False  # traffic-cop flag: True while GPIO trajectory is running
 
 
-async def listen_to_hub(uri: str):
+async def listen_to_hub(uri: str, machine):
     """
     Maintain a persistent WebSocket connection to the FastAPI hub and handle
     incoming commands. Reconnects automatically on drop.
+
+    Jog commands use Viam cloud (motor.set_power / motor.stop).
+    Trajectory execution uses the local GPIO busy-wait loop.
+    While is_executing is True, all jog commands are silently ignored.
     """
-    global event_queue
+    global event_queue, is_executing
+
+    slide_motor = Motor.from_robot(machine, SLIDE_MOTOR_NAME)
 
     while True:
         try:
@@ -213,6 +240,7 @@ async def listen_to_hub(uri: str):
 
                     command = data.get("command", "")
 
+                    # ── Trajectory commands ───────────────────────────────
                     if command == "save_trajectory":
                         print("📥  Trajectory received — compiling...")
                         event_queue = compile_trajectory(data)
@@ -224,13 +252,39 @@ async def listen_to_hub(uri: str):
 
                     elif command == "execute_move":
                         if not event_queue:
-                            print(
-                                "WARN: execute_move received but no trajectory is loaded — ignoring.\n"
-                            )
+                            print("WARN: execute_move received but no trajectory loaded — ignoring.\n")
                             continue
                         print("🚀  Executing move...\n")
-                        execute_move(event_queue)  # blocks until motors finish
+                        is_executing = True
+                        execute_move(event_queue)   # blocks until motors finish
+                        is_executing = False
                         print("Done.\n")
+                        await ws.send(json.dumps({"command": "trajectory_complete"}))
+                        print("📡  Sent trajectory_complete to hub.\n")
+
+                    # ── Jog commands (Viam cloud) ─────────────────────────
+                    elif command == "start_jog":
+                        if is_executing:
+                            print("WARN: jog ignored — trajectory is running.\n")
+                            continue
+                        axis      = data.get("axis", "")
+                        direction = float(data.get("direction", 0))
+                        power     = data.get("power", 0.5) * direction
+                        print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
+                        if axis == "slide":
+                            await slide_motor.set_power(power)
+                        else:
+                            print(f"WARN: unknown jog axis {axis!r}\n")
+
+                    elif command == "stop_jog":
+                        if is_executing:
+                            continue
+                        axis = data.get("axis", "")
+                        print(f"⏹  stop_jog  axis={axis}")
+                        if axis == "slide":
+                            await slide_motor.stop()
+                        else:
+                            print(f"WARN: unknown stop axis {axis!r}\n")
 
                     else:
                         print(f"WARN: unknown command: {command!r}\n")
@@ -241,6 +295,14 @@ async def listen_to_hub(uri: str):
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
+async def main_async(uri: str):
+    machine = await connect_viam()
+    try:
+        await listen_to_hub(uri, machine)
+    finally:
+        await machine.close()
+
+
 if __name__ == "__main__":
     load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -252,7 +314,7 @@ if __name__ == "__main__":
 
     setup()
     try:
-        asyncio.run(listen_to_hub(uri))
+        asyncio.run(main_async(uri))
     except KeyboardInterrupt:
         print("\nAborted.")
     finally:

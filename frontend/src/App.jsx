@@ -122,9 +122,18 @@ function Toolbar() {
 // ─────────────────────────────────────────────────────────────────
 
 /** Single directional wedge button inside a joystick widget. */
-function JogWedge({ style, children }) {
+function JogWedge({ style, children, disabled, onMouseDown, onMouseUp, onMouseLeave, onTouchStart, onTouchEnd }) {
   return (
-    <button className="joystick-wedge" style={style}>
+    <button
+      className={`joystick-wedge ${disabled ? "opacity-30 cursor-not-allowed" : ""}`}
+      style={style}
+      disabled={disabled}
+      onMouseDown={disabled ? undefined : onMouseDown}
+      onMouseUp={disabled ? undefined : onMouseUp}
+      onMouseLeave={disabled ? undefined : onMouseLeave}
+      onTouchStart={disabled ? undefined : onTouchStart}
+      onTouchEnd={disabled ? undefined : onTouchEnd}
+    >
       {children}
     </button>
   );
@@ -156,35 +165,50 @@ function JogHome() {
   );
 }
 
-function LeftSidebar() {
+function LeftSidebar({ sendMessage, isExecuting }) {
+  const jogDisabled = isExecuting;
+
+  const startJog = (axis, direction) =>
+    sendMessage({ command: "start_jog", axis, direction, power: 0.5 });
+  const stopJog = (axis) =>
+    sendMessage({ command: "stop_jog", axis });
+
   return (
     <div className="bg-[var(--bg-main)] flex flex-col p-2 overflow-hidden">
       <h2 className="panel-header mb-2">Robot Controls</h2>
 
       {/* ── Jog D-pads ─────────────────────────────────────────── */}
-      <span className="ctrl-label">Jog</span>
+      <span className="ctrl-label">
+        Jog{isExecuting ? " — EXECUTING" : ""}
+      </span>
       <div className="flex gap-3 justify-center mt-[6px]">
         {/* Slide joystick (horizontal only) */}
         <div className="text-center">
           <div className="relative w-[120px] h-[120px] rounded-full overflow-hidden bg-[#2a2a2c]">
             <div className="w-full h-full grid grid-cols-2 gap-1 bg-[#1a1a1c]">
-              <JogWedge style={{ paddingRight: 12 }}>
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
+              <JogWedge
+                style={{ paddingRight: 12 }}
+                disabled={jogDisabled}
+                onMouseDown={() => startJog("slide", -1)}
+                onMouseUp={() => stopJog("slide")}
+                onMouseLeave={() => stopJog("slide")}
+                onTouchStart={() => startJog("slide", -1)}
+                onTouchEnd={() => stopJog("slide")}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M15 19l-7-7 7-7" />
                 </svg>
               </JogWedge>
-              <JogWedge style={{ paddingLeft: 12 }}>
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
+              <JogWedge
+                style={{ paddingLeft: 12 }}
+                disabled={jogDisabled}
+                onMouseDown={() => startJog("slide", 1)}
+                onMouseUp={() => stopJog("slide")}
+                onMouseLeave={() => stopJog("slide")}
+                onTouchStart={() => startJog("slide", 1)}
+                onTouchEnd={() => stopJog("slide")}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M9 5l7 7-7 7" />
                 </svg>
               </JogWedge>
@@ -462,6 +486,7 @@ function Timeline({
   onPrimarySelectionChange,
   waypointsByTrack,
   sendMessage,
+  onExecute,
 }) {
   const tracks = TRACKS_INFO;
 
@@ -749,6 +774,7 @@ function Timeline({
   };
 
   const handleExecute = () => {
+    onExecute?.(true);
     sendMessage({ sender: "ui", command: "execute_move" });
   };
 
@@ -1488,7 +1514,10 @@ export default function App() {
   const [activeTrack, setActiveTrack] = useState(null);
   const [waypointsByTrack, setWaypointsByTrack] = useState({});
   const [primarySelection,  setPrimarySelection]  = useState(null); // { trackId, frame } | null
-  const { connectionStatus, piStatus, sendMessage } = useAXI6Socket();
+  const [isExecuting, setIsExecuting] = useState(false);
+  const { connectionStatus, piStatus, sendMessage } = useAXI6Socket({
+    onTrajectoryComplete: () => setIsExecuting(false),
+  });
 
   const handleWaypointsChange = (trackId, waypoints) => {
     setWaypointsByTrack((prev) => ({ ...prev, [trackId]: waypoints }));
@@ -1505,7 +1534,7 @@ export default function App() {
         {/* Center: top (controls + viewport) and bottom (timeline) */}
         <div className="grid grid-rows-[1fr_1fr] gap-[2px]">
           <div className="grid grid-cols-[320px_1fr] gap-[2px]">
-            <LeftSidebar />
+            <LeftSidebar sendMessage={sendMessage} isExecuting={isExecuting} />
             <Viewport />
           </div>
           <Timeline
@@ -1518,6 +1547,7 @@ export default function App() {
             onPrimarySelectionChange={setPrimarySelection}
             waypointsByTrack={waypointsByTrack}
             sendMessage={sendMessage}
+            onExecute={setIsExecuting}
           />
         </div>
 

@@ -90,6 +90,16 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     client_id, json.dumps({"ack": "execute_move", "status": "ok"})
                 )
 
+            elif command == "start_jog":
+                await manager.send_to("pi", raw)
+
+            elif command == "stop_jog":
+                await manager.send_to("pi", raw)
+
+            elif command == "trajectory_complete":
+                print("\n✅  TRAJECTORY COMPLETE — forwarding to ui\n")
+                await manager.send_to("ui", json.dumps({"command": "trajectory_complete"}))
+
             else:
                 print(f"[{client_id}] unknown command: {data}")
                 await manager.send_to(
