@@ -61,6 +61,7 @@ PAN_STEPS_PER_REV         = 8000
 PAN_STEPS_PER_SLIDE_STEP  = 0.4   # parasitic compensation (tune empirically)
 
 PULSE_WIDTH = 0.000005  # 5 µs HIGH time for trajectory stepper drivers
+JOG_POWER   = 0.25      # Viam slide jog power (0.0–1.0)
 
 # Tracking pulse timing: speed 1.0 → TRACK_MIN_DELAY, speed ~0 → TRACK_MAX_DELAY
 TRACK_MIN_DELAY  = 0.0002  # fastest inter-pulse sleep (s) — full speed
@@ -347,7 +348,7 @@ async def listen_to_hub(uri: str, machine):
                         direction = float(data.get("direction", 0))
                         print(f"🕹  start_jog  axis={axis}  direction={direction:+.0f}")
                         if axis == "slide":
-                            await slide_motor.set_power(-direction)
+                            await slide_motor.set_power(-direction * JOG_POWER)
                         else:
                             print(f"WARN: unknown jog axis {axis!r}\n")
 
