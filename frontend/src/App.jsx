@@ -166,8 +166,8 @@ function JogHome() {
   );
 }
 
-function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
-  const jogDisabled = isExecuting || isTracking;
+function LeftSidebar({ sendMessage, isExecuting, operationMode, onSetMode }) {
+  const jogDisabled = isExecuting || operationMode !== "trajectory";
   const [jogSpeed, setJogSpeed] = useState(50); // 1–100 %
 
   const startJog = (axis, direction) =>
@@ -321,8 +321,9 @@ function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
       <div className="mb-0.5">
         <span className="ctrl-label block mb-1.5">Operation Mode</span>
         <div className="mode-pill">
-          <button className={`mode-seg${!isTracking ? " active" : ""}`} onClick={() => onSetTracking(false)}>Trajectory</button>
-          <button className={`mode-seg${isTracking ? " active" : ""}`}  onClick={() => onSetTracking(true)}>Tracking</button>
+          <button className={`mode-seg${operationMode === "trajectory" ? " active" : ""}`} onClick={() => onSetMode("trajectory")}>Trajectory</button>
+          <button className={`mode-seg${operationMode === "tracking"   ? " active" : ""}`} onClick={() => onSetMode("tracking")}>Tracking</button>
+          <button className={`mode-seg${operationMode === "orbit"      ? " active" : ""}`} onClick={() => onSetMode("orbit")}>Orbit</button>
         </div>
       </div>
     </div>
@@ -332,28 +333,33 @@ function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
 // ─────────────────────────────────────────────────────────────────
 // VIEWPORT  (shows logo placeholder or live MJPEG stream)
 // ─────────────────────────────────────────────────────────────────
-function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) {
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const streamRef = useRef(null);
-  const [streamRes, setStreamRes] = useState(null); // "1920×1080" etc.
+function Viewport({ isCameraActive, operationMode, sendMessage, trackingOverlay }) {
+  const videoRef        = useRef(null);
+  const captureCanvasRef = useRef(null); // hidden — JPEG frame capture only
+  const drawCanvasRef   = useRef(null);  // visible — ROI drawing overlay
+  const streamRef       = useRef(null);
+  const [streamRes, setStreamRes] = useState(null);
 
+  // Drawing state — refs avoid re-renders during fast mousemove
+  const isDrawing  = useRef(false);
+  const startPos   = useRef({ x: 0, y: 0 });
+  const currentPos = useRef({ x: 0, y: 0 });
+  const [committedBox, setCommittedBox] = useState(null); // CSS-space {x1,y1,x2,y2}
+
+  // ── Camera setup ──────────────────────────────────────────────────
   useEffect(() => {
     if (isCameraActive) {
       const startCamera = async () => {
         try {
-          // Enumerate devices; pick HDMI/capture card if present, else default
           const devices = await navigator.mediaDevices.enumerateDevices();
           const videoDevices = devices.filter((d) => d.kind === "videoinput");
           const hdmiDevice = videoDevices.find((d) =>
-            /hdmi|capture|cam link|elgato|magewell|blackmagic|avermedia/i.test(
-              d.label,
-            ),
+            /hdmi|capture|cam link|elgato|magewell|blackmagic|avermedia/i.test(d.label),
           );
           const videoConstraints = {
             width:      { ideal: 3840 },
             height:     { ideal: 2160 },
-            resizeMode: "none", // deliver frames at native capture size, no browser rescaling
+            resizeMode: "none",
           };
           const constraints = hdmiDevice
             ? { video: { deviceId: { exact: hdmiDevice.deviceId }, ...videoConstraints } }
@@ -363,7 +369,6 @@ function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) 
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             await videoRef.current.play();
-            // Report the actual negotiated resolution
             const { width, height } = stream.getVideoTracks()[0].getSettings();
             setStreamRes(`${width}×${height}`);
           }
@@ -380,7 +385,6 @@ function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) 
       if (videoRef.current) videoRef.current.srcObject = null;
       setStreamRes(null);
     }
-
     return () => {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
@@ -389,25 +393,134 @@ function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) 
     };
   }, [isCameraActive]);
 
+  // ── Frame capture ─────────────────────────────────────────────────
   const captureFrame = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
+    const video  = videoRef.current;
+    const canvas = captureCanvasRef.current;
     if (!video || !canvas || !video.videoWidth) return;
-    canvas.width = video.videoWidth;
+    canvas.width  = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0);
     return canvas.toDataURL("image/jpeg", 0.5);
   };
 
-  // Continuously send frames to the hub while tracking mode is active
+  // ── Frame streaming (tracking + orbit) ───────────────────────────
   useEffect(() => {
-    if (!isTracking || !isCameraActive) return;
+    if ((operationMode !== "tracking" && operationMode !== "orbit") || !isCameraActive) return;
     const id = setInterval(() => {
       const frame = captureFrame();
       if (frame) sendMessage({ command: "process_frame", frame });
-    }, 100); // ~10 fps — enough for proportional control without flooding the hub
+    }, 100);
     return () => clearInterval(id);
-  }, [isTracking, isCameraActive]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [operationMode, isCameraActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Clear draw canvas + committed box when leaving orbit mode ─────
+  useEffect(() => {
+    if (operationMode !== "orbit") {
+      setCommittedBox(null);
+    }
+  }, [operationMode]);
+
+  // ── Redraw committed box onto canvas whenever it changes ──────────
+  useEffect(() => {
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return;
+    // Sync canvas pixel size to its CSS size
+    if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+      canvas.width  = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (committedBox) {
+      const { x1, y1, x2, y2 } = committedBox;
+      ctx.fillStyle   = "rgba(0,255,136,0.08)";
+      ctx.strokeStyle = "#00ff88";
+      ctx.lineWidth   = 2;
+      ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    }
+  }, [committedBox]);
+
+  // ── ROI coordinate scaling: CSS → native video pixels ────────────
+  const cssToVideoCoords = (cssX, cssY) => {
+    const video  = videoRef.current;
+    const canvas = drawCanvasRef.current;
+    if (!video || !canvas || !video.videoWidth) return { x: cssX, y: cssY };
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    const vw = video.videoWidth,   vh = video.videoHeight;
+    const videoAspect = vw / vh, containerAspect = cw / ch;
+    let renderedW, renderedH, offsetX, offsetY;
+    if (videoAspect > containerAspect) {
+      renderedW = cw; renderedH = cw / videoAspect;
+      offsetX = 0;    offsetY = (ch - renderedH) / 2;
+    } else {
+      renderedH = ch; renderedW = ch * videoAspect;
+      offsetX = (cw - renderedW) / 2; offsetY = 0;
+    }
+    return {
+      x: Math.max(0, Math.min(vw, (cssX - offsetX) * (vw / renderedW))),
+      y: Math.max(0, Math.min(vh, (cssY - offsetY) * (vh / renderedH))),
+    };
+  };
+
+  const getCanvasXY = (e) => {
+    const rect = drawCanvasRef.current.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const redrawLive = () => {
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return;
+    if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+      canvas.width  = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const { x: x1, y: y1 } = startPos.current;
+    const { x: x2, y: y2 } = currentPos.current;
+    ctx.fillStyle   = "rgba(0,255,136,0.08)";
+    ctx.strokeStyle = "#00ff88";
+    ctx.lineWidth   = 2;
+    ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+    ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+  };
+
+  // ── Mouse handlers ────────────────────────────────────────────────
+  const handleMouseDown = (e) => {
+    if (operationMode !== "orbit") return;
+    const pos = getCanvasXY(e);
+    startPos.current   = pos;
+    currentPos.current = pos;
+    isDrawing.current  = true;
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDrawing.current) return;
+    currentPos.current = getCanvasXY(e);
+    redrawLive();
+  };
+
+  const handleMouseUp = (e) => {
+    if (!isDrawing.current) return;
+    isDrawing.current  = false;
+    currentPos.current = getCanvasXY(e);
+
+    const { x: cx1, y: cy1 } = startPos.current;
+    const { x: cx2, y: cy2 } = currentPos.current;
+    if (Math.abs(cx2 - cx1) < 10 || Math.abs(cy2 - cy1) < 10) return; // ignore accidental clicks
+
+    const box = { x1: Math.min(cx1, cx2), y1: Math.min(cy1, cy2), x2: Math.max(cx1, cx2), y2: Math.max(cy1, cy2) };
+    setCommittedBox(box);
+
+    const tl  = cssToVideoCoords(box.x1, box.y1);
+    const br  = cssToVideoCoords(box.x2, box.y2);
+    sendMessage({
+      command: "start_orbit",
+      roi: [Math.round(tl.x), Math.round(tl.y), Math.round(br.x - tl.x), Math.round(br.y - tl.y)],
+    });
+  };
 
   return (
     <div className="bg-[var(--bg-main)] flex flex-col p-2 relative min-h-0 min-w-0">
@@ -421,18 +534,6 @@ function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) 
         {streamRes && <span className="text-[10px] text-white/50 tabular-nums">{streamRes}</span>}
         <div className="w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_8px_#dc2626] animate-cam-pulse" />
       </div>
-
-      {/* Capture button */}
-      {isCameraActive && (
-        <button
-          onClick={captureFrame}
-          className="absolute top-4 right-4 z-10 bg-black/50 backdrop-blur-md px-3 py-1
-                     rounded text-white/80 text-xs hover:bg-black/70 transition-colors"
-          title="Capture Frame"
-        >
-          📸 Capture
-        </button>
-      )}
 
       <div
         className="w-full bg-[var(--bg-lighter)] rounded flex-1 overflow-hidden
@@ -471,17 +572,16 @@ function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) 
           playsInline
         />
 
-        {/* Hidden canvas for frame capture */}
-        <canvas ref={canvasRef} className="hidden" />
+        {/* Hidden canvas — JPEG frame capture */}
+        <canvas ref={captureCanvasRef} className="hidden" />
 
-        {/* YOLO tracking overlay */}
+        {/* YOLO tracking overlay (tracking mode only) */}
         {trackingOverlay && trackingOverlay.img_w > 0 && (
           <svg
-            className="absolute inset-0 w-full h-full pointer-events-none"
+            className="absolute inset-0 w-full h-full pointer-events-none z-10"
             viewBox={`0 0 ${trackingOverlay.img_w} ${trackingOverlay.img_h}`}
             preserveAspectRatio="xMidYMid meet"
           >
-            {/* Deadzone band */}
             <rect
               x={trackingOverlay.img_w / 2 - trackingOverlay.deadzone_px}
               y={0}
@@ -492,7 +592,6 @@ function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) 
               strokeWidth="1"
               strokeDasharray="6 4"
             />
-            {/* Detection boxes */}
             {trackingOverlay.detections.map((det, i) => (
               <g key={i}>
                 <rect
@@ -511,6 +610,24 @@ function Viewport({ isCameraActive, isTracking, sendMessage, trackingOverlay }) 
               </g>
             ))}
           </svg>
+        )}
+
+        {/* ROI draw canvas — interactive in orbit mode, passive otherwise */}
+        <canvas
+          ref={drawCanvasRef}
+          className={`absolute inset-0 w-full h-full z-20
+                      ${operationMode === "orbit" ? "cursor-crosshair" : "pointer-events-none"}`}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+        />
+
+        {/* Orbit mode hint */}
+        {operationMode === "orbit" && isCameraActive && !committedBox && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none
+                          bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded text-[11px] text-white/70 tracking-wide">
+            Draw a box around your tracking target
+          </div>
         )}
       </div>
     </div>
@@ -1770,18 +1887,18 @@ export default function App() {
   const [waypointsByTrack, setWaypointsByTrack] = useState({});
   const [primarySelection, setPrimarySelection] = useState(null); // { trackId, frame } | null
   const [isExecuting, setIsExecuting] = useState(false);
-  const [isTracking, setIsTracking] = useState(false);
+  const [operationMode, setOperationMode] = useState("trajectory"); // 'trajectory' | 'tracking' | 'orbit'
   const [trackingOverlay, setTrackingOverlay] = useState(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [durationS, setDurationS] = useState(FALLBACK_DURATION_S);
 
-  const handleSetTracking = (val) => {
-    setIsTracking(val);
-    if (val) {
-      sendMessage({ command: "lock_slide" });
-    } else {
+  const handleSetMode = (mode) => {
+    setOperationMode(mode);
+    if (mode === "trajectory") {
       setTrackingOverlay(null);
       sendMessage({ command: "unlock_slide" });
+    } else {
+      sendMessage({ command: "lock_slide" });
     }
   };
 
@@ -1812,8 +1929,8 @@ export default function App() {
         {/* Center: top (controls + viewport) and bottom (timeline) */}
         <div className="grid grid-rows-[1fr_1fr] gap-[2px]">
           <div className="grid grid-cols-[320px_1fr] gap-[2px]">
-            <LeftSidebar sendMessage={sendMessage} isExecuting={isExecuting} isTracking={isTracking} onSetTracking={handleSetTracking} />
-            <Viewport isCameraActive={isCameraActive} isTracking={isTracking} sendMessage={sendMessage} trackingOverlay={trackingOverlay} />
+            <LeftSidebar sendMessage={sendMessage} isExecuting={isExecuting} operationMode={operationMode} onSetMode={handleSetMode} />
+            <Viewport isCameraActive={isCameraActive} operationMode={operationMode} sendMessage={sendMessage} trackingOverlay={trackingOverlay} />
           </div>
           <Timeline
             currentFrame={currentFrame}

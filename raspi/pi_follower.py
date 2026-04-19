@@ -1,15 +1,18 @@
 """
 raspi/pi_follower.py
 --------------------
-Trajectory follower + live YOLO tracking via raw GPIO pan pulses.
+Trajectory follower + live tracking via raw GPIO pan pulses.
 
 Modes:
-  Trajectory  — pre-baked JSON executed via busy-wait GPIO loop (unchanged).
+  Trajectory  — pre-baked JSON executed in a background thread; busy-wait GPIO loop.
   Tracking    — async pulse loop driven by pan_speed floats from the hub.
+  Orbit       — slide runs a trajectory while pan tracks freely (CSRT from hub).
   Jog         — slide motor via Viam cloud SDK (set_power / stop).
 
-The tracking loop and trajectory executor share is_executing as a mutex:
-tracking yields to GPIO-land while a trajectory is running.
+motor_locks per-axis mutex:
+  Each axis can be independently locked by the trajectory executor.
+  tracking_loop only yields when motor_locks["pan"] is True.
+  This lets a slide-only trajectory run while the pan stays free for tracking.
 """
 
 import asyncio
@@ -155,13 +158,19 @@ def compile_trajectory(json_data):
 
 
 # ── Trajectory Execution ──────────────────────────────────────────────────────
-def execute_move(event_queue):
+def execute_move(event_queue, locks):
     """
     Stream through the sorted event queue using a perf_counter busy-wait loop.
     Blocks the calling thread for the full duration of the move.
+
+    Only enables/disables motors for the axes present in `locks` (True = this
+    trajectory owns that axis).  Axes not in locks are left under the control
+    of the async tracking_loop.
     """
-    GPIO.output(SLIDE_EN, GPIO.LOW)
-    GPIO.output(PAN_EN,   GPIO.LOW)
+    if locks.get("slide"):
+        GPIO.output(SLIDE_EN, GPIO.LOW)
+    if locks.get("pan"):
+        GPIO.output(PAN_EN, GPIO.LOW)
 
     start = time.perf_counter()
 
@@ -183,13 +192,15 @@ def execute_move(event_queue):
                 pass
             GPIO.output(pin, GPIO.LOW)
 
-    GPIO.output(SLIDE_EN, GPIO.HIGH)
-    GPIO.output(PAN_EN,   GPIO.HIGH)
+    if locks.get("slide"):
+        GPIO.output(SLIDE_EN, GPIO.HIGH)
+    if locks.get("pan"):
+        GPIO.output(PAN_EN, GPIO.HIGH)
 
 
-# ── Global Tracking State ─────────────────────────────────────────────────────
-event_queue       = []     # compiled trajectory
-is_executing      = False  # True while GPIO trajectory is running
+# ── Global State ──────────────────────────────────────────────────────────────
+event_queue       = []                                          # compiled trajectory
+motor_locks       = {"slide": False, "pan": False, "tilt": False}  # per-axis execution locks
 current_pan_speed = 0.0    # [-1.0, 1.0] written by WebSocket, read by tracking_loop
 last_track_time   = 0.0    # monotonic time of last "track" command
 
@@ -201,13 +212,14 @@ async def tracking_loop():
 
     Yields between pulses so the WebSocket listener can receive new speed values.
     Automatically zeroes speed if no "track" command arrives within TRACK_TIMEOUT.
-    Pauses completely while is_executing is True.
+    Pauses only when motor_locks["pan"] is True (pan axis owned by trajectory).
+    When motor_locks["pan"] is False the pan is free — orbit slide runs concurrently.
     """
     global current_pan_speed, last_track_time
 
     while True:
-        # Yield to trajectory executor
-        if is_executing:
+        # Yield if the trajectory executor owns the pan axis
+        if motor_locks["pan"]:
             await asyncio.sleep(0.01)
             continue
 
@@ -245,9 +257,9 @@ async def listen_to_hub(uri: str, machine):
 
     Jog commands  → Viam cloud (slide only).
     Track command → updates current_pan_speed for tracking_loop.
-    Trajectory    → GPIO busy-wait via execute_move().
+    Trajectory    → GPIO busy-wait via execute_move() in a background thread.
     """
-    global event_queue, is_executing, current_pan_speed, last_track_time
+    global event_queue, current_pan_speed, last_track_time
 
     slide_motor = Motor.from_robot(machine, SLIDE_MOTOR_NAME)
 
@@ -279,20 +291,33 @@ async def listen_to_hub(uri: str, machine):
                         if not event_queue:
                             print("WARN: execute_move — no trajectory loaded, ignoring.\n")
                             continue
-                        print("🚀  Executing move...\n")
-                        is_executing = True
-                        execute_move(event_queue)   # blocks until done
-                        is_executing = False
+
+                        # Determine which axes this trajectory actually moves
+                        step_pins = {e[2] for e in event_queue if e[0] == "step"}
+                        exec_locks = {
+                            "slide": SLIDE_STEP in step_pins,
+                            "pan":   PAN_STEP   in step_pins,
+                            "tilt":  False,
+                        }
+                        motor_locks.update(exec_locks)
+                        print(f"🚀  Executing move  locks={exec_locks}\n")
+
+                        # Run in background thread — event loop stays alive for tracking_loop
+                        await asyncio.to_thread(execute_move, event_queue, exec_locks)
+
+                        motor_locks["slide"] = False
+                        motor_locks["pan"]   = False
+                        motor_locks["tilt"]  = False
                         print("Done.\n")
                         await ws.send(json.dumps({"command": "trajectory_complete"}))
                         print("📡  Sent trajectory_complete to hub.\n")
 
                     # ── Jog commands (Viam cloud — slide only) ────────────
                     elif command == "start_jog":
-                        if is_executing:
-                            print("WARN: jog ignored — trajectory is running.\n")
+                        axis = data.get("axis", "")
+                        if motor_locks.get(axis, False):
+                            print(f"WARN: jog ignored — {axis} is locked by trajectory.\n")
                             continue
-                        axis      = data.get("axis", "")
                         direction = float(data.get("direction", 0))
                         power     = float(data.get("power", 0.25)) * -direction
                         print(f"🕹  start_jog  axis={axis}  power={power:.2f}")
@@ -302,27 +327,27 @@ async def listen_to_hub(uri: str, machine):
                             print(f"WARN: unknown jog axis {axis!r}\n")
 
                     elif command == "stop_jog":
-                        if is_executing:
-                            continue
                         axis = data.get("axis", "")
+                        if motor_locks.get(axis, False):
+                            continue
                         print(f"⏹  stop_jog  axis={axis}")
                         if axis == "slide":
                             await slide_motor.stop()
                         else:
                             print(f"WARN: unknown stop axis {axis!r}\n")
 
-                    # ── Slide lock / unlock (tracking mode) ──────────────
+                    # ── Slide lock / unlock (tracking / orbit mode) ───────
                     elif command == "lock_slide":
-                        print("🔒  Slide locked (tracking mode)")
+                        print("🔒  Slide locked (tracking / orbit mode)")
                         GPIO.output(SLIDE_EN, GPIO.LOW)   # enable driver = hold torque
 
                     elif command == "unlock_slide":
                         print("🔓  Slide unlocked")
                         GPIO.output(SLIDE_EN, GPIO.HIGH)  # disable driver = free to move
 
-                    # ── Tracking command (YOLO hub → raw GPIO pan) ────────
+                    # ── Tracking command (hub → raw GPIO pan) ─────────────
                     elif command == "track":
-                        if is_executing:
+                        if motor_locks["pan"]:
                             continue
                         current_pan_speed = float(data.get("pan_speed", 0.0))
                         last_track_time   = time.time()
@@ -333,6 +358,9 @@ async def listen_to_hub(uri: str, machine):
         except (OSError, websockets.exceptions.WebSocketException) as exc:
             print(f"Connection lost ({exc}) — retrying in 3 s...\n")
             current_pan_speed = 0.0   # safety: stop pan if hub drops
+            motor_locks["slide"] = False
+            motor_locks["pan"]   = False
+            motor_locks["tilt"]  = False
             await asyncio.sleep(3)
 
 
