@@ -52,15 +52,3 @@ between software clock ticks, frame rates, and electrical pulses.
 timelines into synchronized step-and-dir motor pulses.
 
 ---
-
-## 🚀 Getting Started
-
-### Prerequisites
-* Raspberry Pi running Raspberry Pi OS
-* Python 3.x
-* Node.js & npm (for the web app)
-
-### Installation
-1. Clone the repo
-   ```sh
-   git clone [https://github.com/adamzhang06/AXI6-Camera-Slider.git](https://github.com/adamzhang06/AXI6-Camera-Slider.git)
