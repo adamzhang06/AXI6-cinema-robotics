@@ -592,23 +592,34 @@ function Viewport({ isCameraActive, operationMode, sendMessage, trackingOverlay 
               strokeWidth="1"
               strokeDasharray="6 4"
             />
-            {trackingOverlay.detections.map((det, i) => (
-              <g key={i}>
-                <rect
-                  x={det.x1} y={det.y1}
-                  width={det.x2 - det.x1} height={det.y2 - det.y1}
-                  fill="none"
-                  stroke={det.is_target ? "#FFD500" : "rgba(255,255,255,0.35)"}
-                  strokeWidth={det.is_target ? 3 : 1.5}
-                />
-                {det.is_target && (
-                  <>
-                    <rect x={det.x1} y={det.y1 - 26} width={110} height={22} fill="#FFD500" />
-                    <text x={det.x1 + 6} y={det.y1 - 9} fill="#000" fontSize="16" fontWeight="bold" fontFamily="monospace">TRACKING</text>
-                  </>
-                )}
-              </g>
-            ))}
+            {trackingOverlay.detections.map((det, i) => {
+              const isOrbit  = !!trackingOverlay.orbit;
+              const boxColor = det.is_target
+                ? (isOrbit ? "#00ff88" : "#FFD500")
+                : "rgba(255,255,255,0.35)";
+              const labelBg  = isOrbit ? "#00ff88" : "#FFD500";
+              const labelFg  = "#000";
+              const label    = isOrbit
+                ? `ORBIT ${trackingOverlay.n_pts ?? ""}pts`
+                : "TRACKING";
+              return (
+                <g key={i}>
+                  <rect
+                    x={det.x1} y={det.y1}
+                    width={det.x2 - det.x1} height={det.y2 - det.y1}
+                    fill="none"
+                    stroke={boxColor}
+                    strokeWidth={det.is_target ? 3 : 1.5}
+                  />
+                  {det.is_target && (
+                    <>
+                      <rect x={det.x1} y={det.y1 - 26} width={130} height={22} fill={labelBg} />
+                      <text x={det.x1 + 6} y={det.y1 - 9} fill={labelFg} fontSize="16" fontWeight="bold" fontFamily="monospace">{label}</text>
+                    </>
+                  )}
+                </g>
+              );
+            })}
           </svg>
         )}
 
