@@ -27,8 +27,8 @@ app.add_middleware(
 _MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolov8-face.pt")
 model = YOLO(_MODEL_PATH)
 
-TRACKING_KP = 0.002  # proportional gain: pixels of error → pan speed
-DEADZONE_PX = 40  # pixels from centre with no pan output
+TRACKING_KP = 0.001  # proportional gain: pixels of error → pan speed
+DEADZONE_PX = 80    # pixels from centre with no pan output
 
 
 def _infer(frame_b64: str) -> tuple[float | None, dict]:
@@ -102,7 +102,7 @@ def _infer(frame_b64: str) -> tuple[float | None, dict]:
     if abs(error_x) < DEADZONE_PX:
         pan_speed = 0.0
     else:
-        sign = 1.0 if error_x > 0 else -1.0
+        sign = -1.0 if error_x > 0 else 1.0
         pan_speed = (
             float(np.clip((abs(error_x) - DEADZONE_PX) * TRACKING_KP, 0.0, 1.0)) * sign
         )
