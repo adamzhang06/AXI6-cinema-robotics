@@ -27,8 +27,11 @@ app.add_middleware(
 _MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolov8-face.pt")
 model = YOLO(_MODEL_PATH)
 
-TRACKING_KP = 0.003  # proportional gain: pixels of error → pan speed
-DEADZONE_PX = 80     # pixels from centre with no pan output (YOLO only)
+TRACKING_KP  = 0.003  # proportional gain for YOLO face tracking
+DEADZONE_PX  = 80    # pixels from centre with no pan output (YOLO)
+CSRT_KP      = 0.002  # gentler gain for CSRT — avoids overcorrection
+CSRT_DEADZONE = 50   # pixels of centre tolerance before CSRT commands movement
+CSRT_MAX_SPEED = 0.4  # cap orbit speed to reduce oscillation / parasitic overshoot
 
 # ── Tracker state ─────────────────────────────────────────────────────────────
 tracker      = None          # cv2.TrackerCSRT instance when in orbit mode
@@ -99,7 +102,7 @@ def _infer_csrt(img: np.ndarray, trk) -> tuple[float, dict]:
     img_h, img_w = img.shape[:2]
     img_cx = img_w / 2.0
 
-    overlay = {"detections": [], "img_w": img_w, "img_h": img_h, "deadzone_px": 0}
+    overlay = {"detections": [], "img_w": img_w, "img_h": img_h, "deadzone_px": CSRT_DEADZONE}
 
     success, box = trk.update(img)
     if not success:
@@ -109,8 +112,12 @@ def _infer_csrt(img: np.ndarray, trk) -> tuple[float, dict]:
     cx      = x + w / 2.0
     error_x = cx - img_cx
 
-    # Same sign convention as YOLO: target right → negative speed (pan left)
-    pan_speed = float(np.clip(-error_x * TRACKING_KP, -1.0, 1.0))
+    if abs(error_x) < CSRT_DEADZONE:
+        pan_speed = 0.0
+    else:
+        # Same sign convention as YOLO: target right → negative speed (pan left)
+        sign      = -1.0 if error_x > 0 else 1.0
+        pan_speed = float(np.clip((abs(error_x) - CSRT_DEADZONE) * CSRT_KP, 0.0, CSRT_MAX_SPEED)) * sign
 
     overlay["detections"] = [{"x1": x, "y1": y, "x2": x + w, "y2": y + h, "is_target": True}]
     return pan_speed, overlay
@@ -189,6 +196,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 await manager.send_to(
                     client_id, json.dumps({"ack": "execute_move", "status": "ok"})
                 )
+
+            elif command == "emergency_stop":
+                print("\n🛑  EMERGENCY STOP\n")
+                tracker       = None
+                tracking_mode = "yolo"
+                await manager.send_to("pi", json.dumps({"command": "emergency_stop"}))
 
             elif command == "trajectory_complete":
                 print("\n✅  TRAJECTORY COMPLETE — forwarding to ui\n")

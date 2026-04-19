@@ -764,6 +764,7 @@ function Timeline({
   waypointsByTrack,
   sendMessage,
   onExecute,
+  onEStop,
   durationS,
   onSetDuration,
 }) {
@@ -1450,6 +1451,14 @@ function Timeline({
             >
               EXECUTE MOVE
             </button>
+            <button
+              title="Emergency Stop — halt all motors immediately"
+              onClick={onEStop}
+              className="h-7 px-2 text-[10px] font-bold tracking-wider rounded
+                         bg-red-600 text-white hover:bg-red-500 transition-colors"
+            >
+              E-STOP
+            </button>
           </div>
         </div>
       </div>
@@ -1902,6 +1911,13 @@ export default function App() {
     }
   };
 
+  const handleEStop = () => {
+    sendMessage({ command: "emergency_stop" });
+    setIsExecuting(false);
+    setOperationMode("trajectory");
+    setTrackingOverlay(null);
+  };
+
   const loadPreset = (preset) => {
     setDurationS(preset.durationS);
     curveEditorRef.current?.loadPreset(preset.tracks);
@@ -1943,6 +1959,7 @@ export default function App() {
             waypointsByTrack={waypointsByTrack}
             sendMessage={sendMessage}
             onExecute={setIsExecuting}
+            onEStop={handleEStop}
             durationS={durationS}
             onSetDuration={setDurationS}
           />

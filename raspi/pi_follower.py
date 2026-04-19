@@ -165,8 +165,11 @@ def execute_move(event_queue, locks):
 
     Only enables/disables motors for the axes present in `locks` (True = this
     trajectory owns that axis).  Axes not in locks are left under the control
-    of the async tracking_loop.
+    of the async tracking_loop.  Checks `estop` on every event; aborts cleanly
+    if an emergency stop arrives mid-run.
     """
+    global estop
+
     if locks.get("slide"):
         GPIO.output(SLIDE_EN, GPIO.LOW)
     if locks.get("pan"):
@@ -175,11 +178,19 @@ def execute_move(event_queue, locks):
     start = time.perf_counter()
 
     for event in event_queue:
+        if estop:
+            break
+
         kind      = event[0]
         fire_time = event[1]
 
         while time.perf_counter() - start < fire_time:
+            if estop:
+                break
             pass
+
+        if estop:
+            break
 
         if kind == "dir":
             _, _, pin, value = event
@@ -192,10 +203,10 @@ def execute_move(event_queue, locks):
                 pass
             GPIO.output(pin, GPIO.LOW)
 
-    if locks.get("slide"):
-        GPIO.output(SLIDE_EN, GPIO.HIGH)
-    if locks.get("pan"):
-        GPIO.output(PAN_EN, GPIO.HIGH)
+    # Always disable drivers on exit — whether completed or e-stopped
+    GPIO.output(SLIDE_EN, GPIO.HIGH)
+    GPIO.output(PAN_EN,   GPIO.HIGH)
+    estop = False
 
 
 # ── Global State ──────────────────────────────────────────────────────────────
@@ -203,6 +214,7 @@ event_queue       = []                                          # compiled traje
 motor_locks       = {"slide": False, "pan": False, "tilt": False}  # per-axis execution locks
 current_pan_speed = 0.0    # [-1.0, 1.0] written by WebSocket, read by tracking_loop
 last_track_time   = 0.0    # monotonic time of last "track" command
+estop             = False  # set True to abort execute_move mid-run
 
 
 # ── Async Tracking Loop ───────────────────────────────────────────────────────
@@ -259,7 +271,7 @@ async def listen_to_hub(uri: str, machine):
     Track command → updates current_pan_speed for tracking_loop.
     Trajectory    → GPIO busy-wait via execute_move() in a background thread.
     """
-    global event_queue, current_pan_speed, last_track_time
+    global event_queue, current_pan_speed, last_track_time, estop
 
     slide_motor = Motor.from_robot(machine, SLIDE_MOTOR_NAME)
 
@@ -357,6 +369,24 @@ async def listen_to_hub(uri: str, machine):
                     elif command == "unlock_slide":
                         print("🔓  Slide unlocked")
                         GPIO.output(SLIDE_EN, GPIO.HIGH)  # disable driver = free to move
+
+                    # ── Emergency stop ────────────────────────────────────
+                    elif command == "emergency_stop":
+                        print("🛑  EMERGENCY STOP")
+                        estop             = True   # aborts execute_move thread immediately
+                        current_pan_speed = 0.0
+                        motor_locks["slide"] = False
+                        motor_locks["pan"]   = False
+                        motor_locks["tilt"]  = False
+                        GPIO.output(SLIDE_EN, GPIO.HIGH)
+                        GPIO.output(PAN_EN,   GPIO.HIGH)
+                        GPIO.output(SLIDE_STEP, GPIO.LOW)
+                        GPIO.output(PAN_STEP,   GPIO.LOW)
+                        try:
+                            await slide_motor.stop()
+                        except Exception:
+                            pass
+                        print("🛑  All motors stopped and freed.\n")
 
                     # ── Tracking command (hub → raw GPIO pan) ─────────────
                     elif command == "track":
