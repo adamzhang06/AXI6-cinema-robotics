@@ -216,34 +216,4 @@ export const CINEMATIC_PRESETS = [
       ],
     },
   },
-
-  // ─── 9. The Rubberband ───────────────────────────────────────────────────────
-  // Slow dramatic reveal over 10 s, then a violent 1-second snap back to start.
-  // 12 s total (288 frames).
-  {
-    id: "rubberband",
-    name: "The Rubberband",
-    durationS: 12,
-    tracks: {
-      slide: [
-        // Very long flat handleOut creates strong ease-in (starts almost still).
-        { frame: 0, value: 0, handleIn: null, handleOut: h(160, 0) },
-        // Short, aggressive handleOut fires the snap instantly.
-        { frame: 240, value: 20, handleIn: h(-120, 0), handleOut: h(4, -10) },
-        // Matching short handleIn on the landing — hits 0 hard then flat.
-        { frame: 264, value: 0, handleIn: h(-4, 10), handleOut: h(8, 0) },
-        { frame: 288, value: 0, handleIn: h(-8, 0), handleOut: null },
-      ],
-      pan: [
-        { frame: 0, value: 0, handleIn: null, handleOut: h(160, 0) },
-        { frame: 240, value: 45, handleIn: h(-120, 0), handleOut: h(4, -22) },
-        { frame: 264, value: 0, handleIn: h(-4, 22), handleOut: h(8, 0) },
-        { frame: 288, value: 0, handleIn: h(-8, 0), handleOut: null },
-      ],
-      tilt: [
-        { frame: 0, value: 0, handleIn: null, handleOut: null },
-        { frame: 288, value: 0, handleIn: null, handleOut: null },
-      ],
-    },
-  },
 ];
