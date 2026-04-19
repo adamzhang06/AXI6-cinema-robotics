@@ -215,7 +215,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 if not roi or last_frame is None:
                     print("WARN: start_orbit — no ROI or no frame available yet\n")
                     continue
-                tracker = cv2.TrackerCSRT_create()
+                tracker = cv2.legacy.TrackerCSRT_create()
                 tracker.init(last_frame, tuple(int(v) for v in roi))
                 tracking_mode = "csrt"
                 print(f"🔵  Orbit tracker initialized  roi={roi}\n")
