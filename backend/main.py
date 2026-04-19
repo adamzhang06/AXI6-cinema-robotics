@@ -187,6 +187,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             elif command == "stop_jog":
                 await manager.send_to("pi", raw)
 
+            elif command in ("lock_slide", "unlock_slide"):
+                await manager.send_to("pi", raw)
+
             elif command == "trajectory_complete":
                 print("\n✅  TRAJECTORY COMPLETE — forwarding to ui\n")
                 await manager.send_to(

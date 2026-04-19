@@ -311,6 +311,15 @@ async def listen_to_hub(uri: str, machine):
                         else:
                             print(f"WARN: unknown stop axis {axis!r}\n")
 
+                    # ── Slide lock / unlock (tracking mode) ──────────────
+                    elif command == "lock_slide":
+                        print("🔒  Slide locked (tracking mode)")
+                        GPIO.output(SLIDE_EN, GPIO.LOW)   # enable driver = hold torque
+
+                    elif command == "unlock_slide":
+                        print("🔓  Slide unlocked")
+                        GPIO.output(SLIDE_EN, GPIO.HIGH)  # disable driver = free to move
+
                     # ── Tracking command (YOLO hub → raw GPIO pan) ────────
                     elif command == "track":
                         if is_executing:

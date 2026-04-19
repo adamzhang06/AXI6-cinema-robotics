@@ -167,11 +167,11 @@ function JogHome() {
 }
 
 function LeftSidebar({ sendMessage, isExecuting, isTracking, onSetTracking }) {
-  const jogDisabled = isExecuting; // tracking active is still allowed to jog
+  const jogDisabled = isExecuting || isTracking;
   const [jogSpeed, setJogSpeed] = useState(50); // 1–100 %
 
   const startJog = (axis, direction) =>
-    sendMessage({ command: "start_jog", axis, direction, power: (jogSpeed / 100) * 0.25 });
+    sendMessage({ command: "start_jog", axis, direction, power: (jogSpeed / 100) * 0.1 });
   const stopJog = (axis) => sendMessage({ command: "stop_jog", axis });
 
   return (
@@ -1775,8 +1775,15 @@ export default function App() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [durationS, setDurationS] = useState(FALLBACK_DURATION_S);
 
-  // Clear overlay when tracking mode is turned off
-  useEffect(() => { if (!isTracking) setTrackingOverlay(null); }, [isTracking]);
+  const handleSetTracking = (val) => {
+    setIsTracking(val);
+    if (val) {
+      sendMessage({ command: "lock_slide" });
+    } else {
+      setTrackingOverlay(null);
+      sendMessage({ command: "unlock_slide" });
+    }
+  };
 
   const loadPreset = (preset) => {
     setDurationS(preset.durationS);
@@ -1805,7 +1812,7 @@ export default function App() {
         {/* Center: top (controls + viewport) and bottom (timeline) */}
         <div className="grid grid-rows-[1fr_1fr] gap-[2px]">
           <div className="grid grid-cols-[320px_1fr] gap-[2px]">
-            <LeftSidebar sendMessage={sendMessage} isExecuting={isExecuting} isTracking={isTracking} onSetTracking={setIsTracking} />
+            <LeftSidebar sendMessage={sendMessage} isExecuting={isExecuting} isTracking={isTracking} onSetTracking={handleSetTracking} />
             <Viewport isCameraActive={isCameraActive} isTracking={isTracking} sendMessage={sendMessage} trackingOverlay={trackingOverlay} />
           </div>
           <Timeline
