@@ -30,9 +30,9 @@ model = YOLO(_MODEL_PATH)
 # ── Proportional control constants ───────────────────────────────────────────
 TRACKING_KP   = 0.003   # YOLO gain: pixels of error → pan speed
 DEADZONE_PX   = 80      # YOLO deadzone (px from centre, no pan output)
-ORBIT_KP      = 0.002   # gentler gain for orbit LK tracking
-ORBIT_DEADZONE = 50     # orbit deadzone (px from centre)
-ORBIT_MAX_SPD = 0.4     # orbit max pan speed — limits overshoot
+ORBIT_KP      = 0.006   # orbit proportional gain
+ORBIT_DEADZONE = 35     # orbit deadzone (px from centre)
+ORBIT_MAX_SPD = 1.0     # orbit max pan speed — full range available
 
 # ── Tracking state ────────────────────────────────────────────────────────────
 # "yolo" uses YOLO face detection; "orbit" uses Lucas-Kanade sparse optical flow.

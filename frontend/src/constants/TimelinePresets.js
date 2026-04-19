@@ -145,9 +145,9 @@ export const CINEMATIC_PRESETS = [
         // Long handleOut at extremes holds the angle nearly still at the start/end.
         // Short handleIn/Out at center makes the curve arrive and depart steeply,
         // creating the slow-then-ramp acceleration profile through the midpoint.
-        { frame: 0, value: 30, handleIn: null, handleOut: h(140, 0) },
-        { frame: 240, value: 0, handleIn: h(-20, 0), handleOut: h(20, 0) },
-        { frame: 480, value: -30, handleIn: h(-140, 0), handleOut: null },
+        { frame: 0, value: 0, handleIn: null, handleOut: h(140, 0) },
+        { frame: 240, value: 30, handleIn: h(-20, 0), handleOut: h(20, 0) },
+        { frame: 480, value: 0, handleIn: h(-140, 0), handleOut: null },
       ],
       tilt: [
         { frame: 0, value: 0, handleIn: null, handleOut: null },

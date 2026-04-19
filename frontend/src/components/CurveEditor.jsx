@@ -847,24 +847,22 @@ const CurveEditor = forwardRef(function CurveEditor({
     resetTrack(trackId) {
       if (!trackId) return;
       pushHistory();
-      setTrackData((current) => {
-        const wps = current[trackId];
-        if (!wps) return current;
-        const start = wps.find((wp) => wp.frame === 0);
-        const end   = wps.find((wp) => wp.frame === maxFrame);
-        return { ...current, [trackId]: [start, end].filter(Boolean) };
-      });
+      const track = TRACKS.find((t) => t.id === trackId);
+      if (!track) return;
+      const lh = laneHeights[TRACKS.indexOf(track)] ?? 100;
+      setTrackData((current) => ({
+        ...current,
+        [trackId]: makeDefaultWaypoints(track, lh, maxFrame),
+      }));
       setSelectedWaypoints((prev) => prev.filter((s) => s.trackId !== trackId));
     },
 
     resetAllTracks() {
       pushHistory();
-      setTrackData((current) =>
-        Object.fromEntries(Object.entries(current).map(([trackId, wps]) => {
-          const start = wps.find((wp) => wp.frame === 0);
-          const end   = wps.find((wp) => wp.frame === maxFrame);
-          return [trackId, [start, end].filter(Boolean)];
-        }))
+      setTrackData(
+        Object.fromEntries(
+          TRACKS.map((t, i) => [t.id, makeDefaultWaypoints(t, laneHeights[i] ?? 100, maxFrame)])
+        )
       );
       setSelectedWaypoints([]);
       setPrimarySelection(null);

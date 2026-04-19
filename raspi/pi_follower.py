@@ -63,8 +63,8 @@ PAN_STEPS_PER_SLIDE_STEP  = 0.4   # parasitic compensation (tune empirically)
 PULSE_WIDTH = 0.000005  # 5 µs HIGH time for trajectory stepper drivers
 
 # Tracking pulse timing: speed 1.0 → TRACK_MIN_DELAY, speed ~0 → TRACK_MAX_DELAY
-TRACK_MIN_DELAY  = 0.001   # fastest inter-pulse sleep (s) — full speed
-TRACK_MAX_DELAY  = 0.010   # slowest inter-pulse sleep (s) — near-stop
+TRACK_MIN_DELAY  = 0.0002  # fastest inter-pulse sleep (s) — full speed
+TRACK_MAX_DELAY  = 0.003   # slowest inter-pulse sleep (s) — near-stop
 TRACK_PULSE_HIGH = 0.0001  # 100 µs HIGH pulse for tracking (async, not busy-wait)
 TRACK_TIMEOUT    = 0.5     # zero speed if no "track" command received within this window (s)
 TRACK_DEADBAND   = 0.01    # speeds below this are treated as zero
@@ -324,6 +324,7 @@ async def listen_to_hub(uri: str, machine):
                             "pan":   PAN_STEP   in step_pins,
                             "tilt":  False,
                         }
+                        estop = False   # clear any prior E-STOP before starting move
                         motor_locks.update(exec_locks)
                         print(f"🚀  Executing move  orbit={orbit}  locks={exec_locks}\n")
 
@@ -363,6 +364,7 @@ async def listen_to_hub(uri: str, machine):
 
                     # ── Slide lock / unlock (tracking / orbit mode) ───────
                     elif command == "lock_slide":
+                        estop = False   # clear E-STOP block when re-entering tracking
                         print("🔒  Slide locked (tracking / orbit mode)")
                         GPIO.output(SLIDE_EN, GPIO.LOW)   # enable driver = hold torque
 
@@ -390,7 +392,7 @@ async def listen_to_hub(uri: str, machine):
 
                     # ── Tracking command (hub → raw GPIO pan) ─────────────
                     elif command == "track":
-                        if motor_locks["pan"]:
+                        if motor_locks["pan"] or estop:
                             continue
                         current_pan_speed = float(data.get("pan_speed", 0.0))
                         last_track_time   = time.time()
