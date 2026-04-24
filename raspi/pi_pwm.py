@@ -1,18 +1,24 @@
 """
-raspi/pi_follower.py
---------------------
-Trajectory follower + live tracking via raw GPIO pan pulses.
+raspi/pi_pwm.py
+---------------
+PWM-based trajectory follower + live tracking.
+
+Drop-in structural replacement for pi_follower.py that drives motors via
+GPIO.PWM duty-cycle instead of step/dir pulse trains.  All WebSocket
+commands, motor_locks semantics, and Viam jog support are preserved.
 
 Modes:
-  Trajectory  — pre-baked JSON executed in a background thread; busy-wait GPIO loop.
-  Tracking    — async pulse loop driven by pan_speed floats from the hub.
-  Orbit       — slide runs a trajectory while pan tracks freely (CSRT from hub).
+  Trajectory  — velocity profile derived from JSON executed in a background
+                thread; sets PWM duty cycle per interpolated segment.
+  Tracking    — async loop drives pan PWM duty cycle from pan_speed floats.
+  Orbit       — slide runs a trajectory while pan tracks freely.
   Jog         — slide motor via Viam cloud SDK (set_power / stop).
 
-motor_locks per-axis mutex:
-  Each axis can be independently locked by the trajectory executor.
-  tracking_loop only yields when motor_locks["pan"] is True.
-  This lets a slide-only trajectory run while the pan stays free for tracking.
+TODO (tuning):
+  - Set PWM_FREQUENCY to match your motor driver's preferred frequency.
+  - Set MAX_DUTY to the maximum safe duty cycle (often < 100 if driver needs headroom).
+  - Calibrate SLIDE_STEPS_PER_INCH / PAN_STEPS_PER_REV if you re-add position tracking.
+  - Decide on H-bridge wiring: separate DIR pin per axis, or dual PWM (FWD/REV pins).
 """
 
 import asyncio
@@ -46,129 +52,151 @@ async def connect_viam():
 
 
 # ── Slide Pins (BCM) ──────────────────────────────────────────────────────────
-SLIDE_EN = 14  # 8
-SLIDE_STEP = 15  # 10
-SLIDE_DIR = 18  # 12
+SLIDE_EN = 14  # enable (active LOW)
+SLIDE_PWM = 18  # PWM speed signal  TODO: rewire to your H-bridge PWM input
+SLIDE_DIR = 15  # direction
 
 # ── Pan Pins (BCM) ────────────────────────────────────────────────────────────
-PAN_EN = 8  # 24
-PAN_STEP = 7  # 26
-PAN_DIR = 1  # 28
+PAN_EN = 8  # enable (active LOW)
+PAN_PWM = 12  # PWM speed signal   TODO: rewire to your H-bridge PWM input
+PAN_DIR = 7  # direction
 
-# ── Config ────────────────────────────────────────────────────────────────────
-SLIDE_STEPS_PER_INCH = 1270
+# ── PWM Config ────────────────────────────────────────────────────────────────
+PWM_FREQUENCY = 1000  # Hz — TODO: tune for your driver (1 kHz is a safe start)
+MAX_DUTY = 100.0  # % — TODO: lower if driver/motor needs a ceiling
+
+# ── Trajectory Config ─────────────────────────────────────────────────────────
+SLIDE_STEPS_PER_INCH = 1270  # kept for velocity calculation (units/s → duty %)
 PAN_STEPS_PER_REV = 8000
-PAN_STEPS_PER_SLIDE_STEP = 0.4  # parasitic compensation (tune empirically)
+PAN_STEPS_PER_SLIDE_STEP = 0.4  # parasitic compensation
 
-PULSE_WIDTH = 0.000005  # 5 µs HIGH time for trajectory stepper drivers
+# ── Tracking Config ───────────────────────────────────────────────────────────
+TRACK_UPDATE_INTERVAL = 0.01  # s between duty-cycle writes in tracking_loop
+TRACK_TIMEOUT = 0.5  # s — zero speed if no "track" command received
+TRACK_DEADBAND = 0.01  # speeds below this treated as zero
+
 JOG_POWER = 1.0  # Viam slide jog power (0.0–1.0)
-JOG_STEP_DELAY = 200  # µs between microsteps for Viam jog
-
-# Tracking pulse timing: speed 1.0 → TRACK_MIN_DELAY, speed ~0 → TRACK_MAX_DELAY
-TRACK_MIN_DELAY = 0.0002  # fastest inter-pulse sleep (s) — full speed
-TRACK_MAX_DELAY = 0.003  # slowest inter-pulse sleep (s) — near-stop
-TRACK_PULSE_HIGH = 0.0001  # 100 µs HIGH pulse for tracking (async, not busy-wait)
-TRACK_TIMEOUT = 0.5  # zero speed if no "track" command received within this window (s)
-TRACK_DEADBAND = 0.01  # speeds below this are treated as zero
+JOG_STEP_DELAY = 200  # µs passed to Viam motor extra param
 
 
-# ── GPIO ──────────────────────────────────────────────────────────────────────
+# ── GPIO + PWM Objects ────────────────────────────────────────────────────────
+slide_pwm: GPIO.PWM | None = None
+pan_pwm: GPIO.PWM | None = None
+
+
 def setup():
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
-    GPIO.setup([SLIDE_EN, SLIDE_STEP, SLIDE_DIR, PAN_EN, PAN_STEP, PAN_DIR], GPIO.OUT)
-    GPIO.output(SLIDE_EN, GPIO.HIGH)  # start disabled — motors free to move by hand
+
+    GPIO.setup([SLIDE_EN, SLIDE_PWM, SLIDE_DIR, PAN_EN, PAN_PWM, PAN_DIR], GPIO.OUT)
+
+    # Start disabled — motors free to move by hand
+    GPIO.output(SLIDE_EN, GPIO.HIGH)
     GPIO.output(PAN_EN, GPIO.HIGH)
-    GPIO.output(SLIDE_STEP, GPIO.LOW)
-    GPIO.output(PAN_STEP, GPIO.LOW)
+    GPIO.output(SLIDE_DIR, GPIO.LOW)
+    GPIO.output(PAN_DIR, GPIO.LOW)
+
+    global slide_pwm, pan_pwm
+    slide_pwm = GPIO.PWM(SLIDE_PWM, PWM_FREQUENCY)
+    pan_pwm = GPIO.PWM(PAN_PWM, PWM_FREQUENCY)
+    slide_pwm.start(0)
+    pan_pwm.start(0)
 
 
 def teardown():
-    GPIO.output(SLIDE_EN, GPIO.HIGH)  # disable drivers
+    if slide_pwm:
+        slide_pwm.stop()
+    if pan_pwm:
+        pan_pwm.stop()
+    GPIO.output(SLIDE_EN, GPIO.HIGH)
     GPIO.output(PAN_EN, GPIO.HIGH)
     GPIO.cleanup()
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _set_slide(speed: float):
+    """speed in [-1.0, 1.0]; sets direction pin and duty cycle."""
+    GPIO.output(SLIDE_DIR, GPIO.LOW if speed >= 0 else GPIO.HIGH)
+    slide_pwm.ChangeDutyCycle(min(abs(speed) * MAX_DUTY, MAX_DUTY))
+
+
+def _set_pan(speed: float):
+    """speed in [-1.0, 1.0]; sets direction pin and duty cycle."""
+    GPIO.output(PAN_DIR, GPIO.HIGH if speed >= 0 else GPIO.LOW)
+    pan_pwm.ChangeDutyCycle(min(abs(speed) * MAX_DUTY, MAX_DUTY))
 
 
 # ── Trajectory Compiler ───────────────────────────────────────────────────────
 def compile_trajectory(json_data):
     """
-    Convert a pre-baked JSON trajectory into a flat, sorted master event queue.
+    Convert a pre-baked JSON trajectory into a list of velocity segments.
 
-    Each event is one of:
-        ('dir',  fire_time_s, pin, gpio_value)  — set a direction pin
-        ('step', fire_time_s, pin)              — pulse a step pin HIGH→LOW
+    Each segment:
+        {
+          't':           float,  # wall-clock start time (s from move start)
+          'slide_speed': float,  # normalised [-1, 1] (positive = forward)
+          'pan_speed':   float,  # normalised [-1, 1]
+          'duration':    float,  # how long to hold this duty cycle (s)
+        }
 
-    Events are sorted ascending by fire_time_s so execute_move can stream
-    through them in a single pass.
+    The executor sets duty cycle at segment start and lets it run for
+    `duration` before moving to the next segment.  Sub-frame interpolation
+    can be added here by splitting segments further.
+
+    TODO: replace with a proper velocity profile if you have encoder feedback.
     """
     fps = json_data["fps"]
     frame_dur = 1.0 / fps
-
     tracks = json_data["tracks"]
-    slide_pos = tracks["slide"]  # absolute inches, one per frame
-    pan_pos = tracks["pan"]  # absolute degrees, one per frame
+    slide_pos = tracks["slide"]  # absolute inches per frame
+    pan_pos = tracks["pan"]  # absolute degrees per frame
 
-    events = []
+    # Precompute peak velocities so we can normalise duty cycles.
+    # TODO: replace with actual motor max-speed calibration.
+    slide_velocities = [
+        (slide_pos[i] - slide_pos[i - 1]) * SLIDE_STEPS_PER_INCH / frame_dur
+        for i in range(1, len(slide_pos))
+    ]
+    pan_velocities = [
+        ((pan_pos[i] - pan_pos[i - 1]) / 360.0) * PAN_STEPS_PER_REV / frame_dur
+        for i in range(1, len(pan_pos))
+    ]
 
-    prev_slide_dir = None
-    prev_pan_dir = None
+    max_slide_v = max((abs(v) for v in slide_velocities), default=1.0) or 1.0
+    max_pan_v = max((abs(v) for v in pan_velocities), default=1.0) or 1.0
 
-    # Fractional accumulators carry sub-step remainder across frame boundaries.
-    slide_acc = 0.0
-    pan_acc = 0.0
-
+    segments = []
     for i in range(1, len(slide_pos)):
         t_start = (i - 1) * frame_dur
 
-        # ── Slide delta → steps ───────────────────────────────────────────
         slide_delta = slide_pos[i] - slide_pos[i - 1]
-        slide_acc += slide_delta * SLIDE_STEPS_PER_INCH
-        slide_steps = int(slide_acc)
-        slide_acc -= slide_steps
-
-        # ── Pan delta → intended steps (with parasitic compensation) ──────
         pan_delta = pan_pos[i] - pan_pos[i - 1]
-        intended_pan = (pan_delta / 360.0) * PAN_STEPS_PER_REV
-        parasitic = slide_delta * SLIDE_STEPS_PER_INCH * PAN_STEPS_PER_SLIDE_STEP
-        pan_acc += intended_pan - parasitic
-        net_pan = int(pan_acc)
-        pan_acc -= net_pan
 
-        # ── Direction events ──────────────────────────────────────────────
-        slide_dir = GPIO.LOW if slide_steps >= 0 else GPIO.HIGH
-        pan_dir = GPIO.HIGH if net_pan >= 0 else GPIO.LOW
+        slide_v = slide_delta * SLIDE_STEPS_PER_INCH / frame_dur
+        pan_v = (
+            pan_delta / 360.0
+        ) * PAN_STEPS_PER_REV / frame_dur - slide_v * PAN_STEPS_PER_SLIDE_STEP
 
-        if slide_steps != 0 and slide_dir != prev_slide_dir:
-            events.append(("dir", t_start, SLIDE_DIR, slide_dir))
-            prev_slide_dir = slide_dir
+        segments.append(
+            {
+                "t": t_start,
+                "slide_speed": slide_v / max_slide_v,
+                "pan_speed": pan_v / max_pan_v,
+                "duration": frame_dur,
+            }
+        )
 
-        if net_pan != 0 and pan_dir != prev_pan_dir:
-            events.append(("dir", t_start, PAN_DIR, pan_dir))
-            prev_pan_dir = pan_dir
-
-        # ── Distribute steps evenly across the frame window ───────────────
-        n_slide = abs(slide_steps)
-        for j in range(n_slide):
-            events.append(("step", t_start + j * frame_dur / n_slide, SLIDE_STEP))
-
-        n_pan = abs(net_pan)
-        for j in range(n_pan):
-            events.append(("step", t_start + j * frame_dur / n_pan, PAN_STEP))
-
-    events.sort(key=lambda e: e[1])
-    return events
+    return segments
 
 
 # ── Trajectory Execution ──────────────────────────────────────────────────────
-def execute_move(event_queue, locks):
+def execute_move(segments, locks):
     """
-    Stream through the sorted event queue using a perf_counter busy-wait loop.
+    Walk through velocity segments, setting PWM duty cycles in real time.
     Blocks the calling thread for the full duration of the move.
 
-    Only enables/disables motors for the axes present in `locks` (True = this
-    trajectory owns that axis).  Axes not in locks are left under the control
-    of the async tracking_loop.  Checks `estop` on every event; aborts cleanly
-    if an emergency stop arrives mid-run.
+    Only enables/disables motors for axes present in `locks`.
+    Checks `estop` before each segment; aborts cleanly if triggered.
     """
     global estop
 
@@ -179,14 +207,12 @@ def execute_move(event_queue, locks):
 
     start = time.perf_counter()
 
-    for event in event_queue:
+    for seg in segments:
         if estop:
             break
 
-        kind = event[0]
-        fire_time = event[1]
-
-        while time.perf_counter() - start < fire_time:
+        # Busy-wait until segment start time
+        while time.perf_counter() - start < seg["t"]:
             if estop:
                 break
             pass
@@ -194,86 +220,75 @@ def execute_move(event_queue, locks):
         if estop:
             break
 
-        if kind == "dir":
-            _, _, pin, value = event
-            GPIO.output(pin, value)
-        elif kind == "step":
-            _, _, pin = event
-            GPIO.output(pin, GPIO.HIGH)
-            end = time.perf_counter() + PULSE_WIDTH
-            while time.perf_counter() < end:
-                pass
-            GPIO.output(pin, GPIO.LOW)
+        if locks.get("slide"):
+            _set_slide(seg["slide_speed"])
+        if locks.get("pan"):
+            _set_pan(seg["pan_speed"])
 
-    # Always disable drivers on exit — whether completed or e-stopped
+        # Hold until segment end (simple open-loop; add encoder PID here)
+        seg_end = seg["t"] + seg["duration"]
+        while time.perf_counter() - start < seg_end:
+            if estop:
+                break
+            pass
+
+    # Always stop and disable on exit
+    slide_pwm.ChangeDutyCycle(0)
+    pan_pwm.ChangeDutyCycle(0)
     GPIO.output(SLIDE_EN, GPIO.HIGH)
     GPIO.output(PAN_EN, GPIO.HIGH)
     estop = False
 
 
 # ── Global State ──────────────────────────────────────────────────────────────
-event_queue = []  # compiled trajectory
-motor_locks = {"slide": False, "pan": False, "tilt": False}  # per-axis execution locks
+trajectory_segments = []  # compiled velocity segments
+motor_locks = {"slide": False, "pan": False, "tilt": False}
 current_pan_speed = 0.0  # [-1.0, 1.0] written by WebSocket, read by tracking_loop
-last_track_time = 0.0  # monotonic time of last "track" command
-estop = False  # set True to abort execute_move mid-run
+last_track_time = 0.0
+estop = False
 
 
 # ── Async Tracking Loop ───────────────────────────────────────────────────────
 async def tracking_loop():
     """
-    Background task: pulses PAN_STEP at a rate proportional to current_pan_speed.
+    Background task: updates PAN PWM duty cycle from current_pan_speed.
 
-    Yields between pulses so the WebSocket listener can receive new speed values.
-    Automatically zeroes speed if no "track" command arrives within TRACK_TIMEOUT.
-    Pauses only when motor_locks["pan"] is True (pan axis owned by trajectory).
-    When motor_locks["pan"] is False the pan is free — orbit slide runs concurrently.
+    Yields on every iteration so the WebSocket listener stays responsive.
+    Zeros speed automatically if no "track" command arrives within TRACK_TIMEOUT.
+    Pauses when motor_locks["pan"] is True (pan owned by trajectory).
     """
     global current_pan_speed, last_track_time
 
     while True:
-        # Yield if the trajectory executor owns the pan axis
         if motor_locks["pan"]:
             await asyncio.sleep(0.01)
             continue
 
-        # Timeout safety — kill speed if hub goes quiet
         if time.time() - last_track_time > TRACK_TIMEOUT:
             current_pan_speed = 0.0
 
         speed = current_pan_speed
         if abs(speed) < TRACK_DEADBAND:
-            GPIO.output(PAN_EN, GPIO.HIGH)  # disable driver when idle — motor free
-            await asyncio.sleep(0.01)
+            pan_pwm.ChangeDutyCycle(0)
+            GPIO.output(PAN_EN, GPIO.HIGH)  # free motor when idle
+            await asyncio.sleep(TRACK_UPDATE_INTERVAL)
             continue
 
-        # Enable driver only while actively moving
         GPIO.output(PAN_EN, GPIO.LOW)
-
-        # Set direction
-        GPIO.output(PAN_DIR, GPIO.HIGH if speed > 0 else GPIO.LOW)
-
-        # Pulse step pin
-        GPIO.output(PAN_STEP, GPIO.HIGH)
-        await asyncio.sleep(TRACK_PULSE_HIGH)
-        GPIO.output(PAN_STEP, GPIO.LOW)
-
-        # Speed → inter-pulse delay: 1.0 → TRACK_MIN_DELAY, ~0 → TRACK_MAX_DELAY
-        delay = TRACK_MAX_DELAY - abs(speed) * (TRACK_MAX_DELAY - TRACK_MIN_DELAY)
-        await asyncio.sleep(delay)
+        _set_pan(speed)
+        await asyncio.sleep(TRACK_UPDATE_INTERVAL)
 
 
 # ── WebSocket Bridge ──────────────────────────────────────────────────────────
 async def listen_to_hub(uri: str, machine):
     """
-    Maintain a persistent WebSocket connection to the FastAPI hub.
-    Reconnects automatically on drop.
+    Persistent WebSocket connection to the FastAPI hub.  Reconnects on drop.
 
     Jog commands  → Viam cloud (slide only).
     Track command → updates current_pan_speed for tracking_loop.
-    Trajectory    → GPIO busy-wait via execute_move() in a background thread.
+    Trajectory    → PWM velocity segments via execute_move() in a background thread.
     """
-    global event_queue, current_pan_speed, last_track_time, estop
+    global trajectory_segments, current_pan_speed, last_track_time, estop
 
     slide_motor = Motor.from_robot(machine, SLIDE_MOTOR_NAME)
 
@@ -294,15 +309,11 @@ async def listen_to_hub(uri: str, machine):
                     # ── Trajectory commands ───────────────────────────────
                     if command == "save_trajectory":
                         print("📥  Trajectory received — compiling...")
-                        event_queue = compile_trajectory(data)
-                        step_count = sum(1 for e in event_queue if e[0] == "step")
-                        print(
-                            f"    Compiled: {len(event_queue):,} events, "
-                            f"{step_count:,} step pulses\n"
-                        )
+                        trajectory_segments = compile_trajectory(data)
+                        print(f"    Compiled: {len(trajectory_segments):,} segments\n")
 
                     elif command == "execute_move":
-                        if not event_queue:
+                        if not trajectory_segments:
                             print(
                                 "WARN: execute_move — no trajectory loaded, ignoring.\n"
                             )
@@ -310,47 +321,27 @@ async def listen_to_hub(uri: str, machine):
 
                         orbit = data.get("orbit", False)
 
-                        # In orbit mode the pan is owned by CSRT tracking — strip all
-                        # pan step/dir events so the trajectory only drives the slide.
-                        queue = (
-                            [
-                                e
-                                for e in event_queue
-                                if not (
-                                    e[0] in ("step", "dir")
-                                    and e[2] in (PAN_STEP, PAN_DIR)
-                                )
+                        # In orbit mode strip pan from the segment velocities so the
+                        # tracking_loop can drive pan freely via CSRT.
+                        if orbit:
+                            segs = [
+                                {**s, "pan_speed": 0.0} for s in trajectory_segments
                             ]
-                            if orbit
-                            else event_queue
-                        )
+                            exec_locks = {"slide": True, "pan": False, "tilt": False}
+                        else:
+                            segs = trajectory_segments
+                            exec_locks = {"slide": True, "pan": True, "tilt": False}
 
-                        step_pins = {e[2] for e in queue if e[0] == "step"}
-                        exec_locks = (
-                            {
-                                "slide": SLIDE_STEP in step_pins,
-                                "pan": False,  # pan always free in orbit; only slide locked
-                                "tilt": False,
-                            }
-                            if orbit
-                            else {
-                                "slide": SLIDE_STEP in step_pins,
-                                "pan": PAN_STEP in step_pins,
-                                "tilt": False,
-                            }
-                        )
-                        estop = False  # clear any prior E-STOP before starting move
+                        estop = False
                         motor_locks.update(exec_locks)
                         print(
                             f"🚀  Executing move  orbit={orbit}  locks={exec_locks}\n"
                         )
 
-                        # Run as a separate task so the WebSocket listener stays live
-                        # and can receive emergency_stop mid-trajectory.
                         async def _run_trajectory(
-                            _queue=queue, _locks=exec_locks, _ws=ws
+                            _segs=segs, _locks=exec_locks, _ws=ws
                         ):
-                            await asyncio.to_thread(execute_move, _queue, _locks)
+                            await asyncio.to_thread(execute_move, _segs, _locks)
                             motor_locks["slide"] = False
                             motor_locks["pan"] = False
                             motor_locks["tilt"] = False
@@ -395,35 +386,33 @@ async def listen_to_hub(uri: str, machine):
 
                     # ── Slide lock / unlock (tracking / orbit mode) ───────
                     elif command == "lock_slide":
-                        estop = False  # clear E-STOP block when re-entering tracking
+                        estop = False
                         print("🔒  Slide locked (tracking / orbit mode)")
-                        GPIO.output(SLIDE_EN, GPIO.LOW)  # enable driver = hold torque
+                        GPIO.output(SLIDE_EN, GPIO.LOW)
 
                     elif command == "unlock_slide":
                         print("🔓  Slide unlocked")
-                        GPIO.output(
-                            SLIDE_EN, GPIO.HIGH
-                        )  # disable driver = free to move
+                        GPIO.output(SLIDE_EN, GPIO.HIGH)
 
                     # ── Emergency stop ────────────────────────────────────
                     elif command == "emergency_stop":
                         print("🛑  EMERGENCY STOP")
-                        estop = True  # aborts execute_move thread immediately
+                        estop = True
                         current_pan_speed = 0.0
                         motor_locks["slide"] = False
                         motor_locks["pan"] = False
                         motor_locks["tilt"] = False
+                        slide_pwm.ChangeDutyCycle(0)
+                        pan_pwm.ChangeDutyCycle(0)
                         GPIO.output(SLIDE_EN, GPIO.HIGH)
                         GPIO.output(PAN_EN, GPIO.HIGH)
-                        GPIO.output(SLIDE_STEP, GPIO.LOW)
-                        GPIO.output(PAN_STEP, GPIO.LOW)
                         try:
                             await slide_motor.stop()
                         except Exception:
                             pass
                         print("🛑  All motors stopped and freed.\n")
 
-                    # ── Tracking command (hub → raw GPIO pan) ─────────────
+                    # ── Tracking command (hub → pan PWM) ──────────────────
                     elif command == "track":
                         if motor_locks["pan"] or estop:
                             continue
@@ -435,7 +424,7 @@ async def listen_to_hub(uri: str, machine):
 
         except (OSError, websockets.exceptions.WebSocketException) as exc:
             print(f"Connection lost ({exc}) — retrying in 3 s...\n")
-            current_pan_speed = 0.0  # safety: stop pan if hub drops
+            current_pan_speed = 0.0
             motor_locks["slide"] = False
             motor_locks["pan"] = False
             motor_locks["tilt"] = False
