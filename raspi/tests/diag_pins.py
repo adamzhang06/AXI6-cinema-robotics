@@ -2,13 +2,13 @@
 raspi/tests/diag_pins.py
 ------------------------
 Pin-by-pin diagnostic for the slide/pan motor driver.
-Run this INSTEAD of test_pwm.py when the motor doesn't respond.
+Uses fixed 50% duty, variable frequency — same model as pi_pwm.py.
 
 Each test is interactive — press Enter to advance.
-Watch your driver's indicator LEDs or probe the output pins with a multimeter.
+Watch your driver's indicator LEDs or probe with a multimeter/oscilloscope.
 
 Usage:
-    python raspi/tests/diag_pins.py [--axis slide|pan] [--freq 1000]
+    python raspi/tests/diag_pins.py [--axis slide|pan] [--freq 500]
 """
 
 import argparse
@@ -30,6 +30,9 @@ PAN_EN  = 8
 PAN_PWM = 12
 PAN_DIR = 7
 
+FIXED_DUTY   = 50.0
+INIT_FREQ_HZ = 1.0
+
 
 def pause(msg=""):
     input(f"  {msg}  [press Enter to continue] ")
@@ -38,19 +41,19 @@ def pause(msg=""):
 def test_enable(en_pin: int, label: str):
     print(f"\n{'='*60}")
     print(f"TEST 1 — ENABLE PIN  ({label} EN = BCM {en_pin})")
-    print("  The code drives EN LOW to enable the driver (active-LOW).")
-    print("  If your driver is active-HIGH, flip to GPIO.HIGH below.\n")
+    print("  Code drives EN LOW to enable the driver (active-LOW).")
+    print("  If your driver is active-HIGH, that will be caught in Test 4.\n")
 
     print(f"  Setting BCM {en_pin} → HIGH (disabled)")
     GPIO.output(en_pin, GPIO.HIGH)
-    pause("Is the driver disabled / fault LED off?")
+    pause("Driver disabled — status LED off?")
 
     print(f"  Setting BCM {en_pin} → LOW  (enabled)")
     GPIO.output(en_pin, GPIO.LOW)
-    pause("Is the driver enabled / status LED on?  (motor should hold torque if powered)")
+    pause("Driver enabled — status LED on? Motor holding torque if powered?")
 
-    GPIO.output(en_pin, GPIO.HIGH)   # disable again
-    print("  EN pin back HIGH (disabled).")
+    GPIO.output(en_pin, GPIO.HIGH)
+    print("  EN back HIGH (disabled).")
 
 
 def test_direction(dir_pin: int, label: str):
@@ -65,57 +68,56 @@ def test_direction(dir_pin: int, label: str):
     GPIO.output(dir_pin, GPIO.LOW)
 
 
-def test_pwm_manual(pwm_pin: int, label: str, freq: int):
+def test_freq_sweep(en_pin: int, pwm_pin: int, dir_pin: int, label: str, max_freq: float):
     print(f"\n{'='*60}")
-    print(f"TEST 3 — PWM SIGNAL  ({label} PWM = BCM {pwm_pin})")
-    print(f"  Using software PWM at {freq} Hz.")
-    print("  Motor should spin — if still nothing, PWM pin may be wrong or driver needs both EN+PWM.\n")
+    print(f"TEST 3 — FREQUENCY SWEEP  ({label} PWM = BCM {pwm_pin})")
+    print(f"  Fixed duty={FIXED_DUTY}%, ramping 0 → {max_freq:.0f} Hz → 0")
+    print("  EN will be enabled — motor should spin and change speed.\n")
 
-    pwm = GPIO.PWM(pwm_pin, freq)
+    pwm = GPIO.PWM(pwm_pin, INIT_FREQ_HZ)
     pwm.start(0)
-
-    for duty in [25, 50, 75, 100]:
-        print(f"  Duty → {duty}%  (EN still HIGH = disabled)")
-        pwm.ChangeDutyCycle(duty)
-        pause("Any signal on the PWM output pin? (motor should NOT move — EN still disabled)")
-
-    # Now enable the driver
-    en_pin = SLIDE_EN if label == "slide" else PAN_EN
-    dir_pin = SLIDE_DIR if label == "slide" else PAN_DIR
-
-    print("\n  Enabling driver (EN → LOW) and setting DIR → LOW (forward)")
+    GPIO.output(dir_pin, GPIO.LOW)
     GPIO.output(en_pin, GPIO.LOW)
-    GPIO.output(dir_pin, GPIO.LOW)
 
-    for duty in [25, 50, 75, 100]:
-        print(f"  Duty → {duty}%   (driver enabled)")
-        pwm.ChangeDutyCycle(duty)
-        time.sleep(1.5)
-        print("    stopping briefly...")
-        pwm.ChangeDutyCycle(0)
-        time.sleep(0.3)
+    freqs = [10, 50, 100, 250, 500, max_freq]
+    print("  Ramp up: ", end="", flush=True)
+    for f in freqs:
+        pwm.ChangeFrequency(f)
+        pwm.ChangeDutyCycle(FIXED_DUTY)
+        print(f"{f:.0f}Hz ", end="", flush=True)
+        time.sleep(0.8)
+
+    print("\n  Ramp dn: ", end="", flush=True)
+    for f in reversed(freqs[:-1]):
+        pwm.ChangeFrequency(f)
+        pwm.ChangeDutyCycle(FIXED_DUTY)
+        print(f"{f:.0f}Hz ", end="", flush=True)
+        time.sleep(0.8)
+
+    pwm.ChangeDutyCycle(0)
+    print("0 (stop)")
+    pause("Did the motor move and change speed with frequency?")
 
     GPIO.output(en_pin, GPIO.HIGH)
-    pwm.ChangeDutyCycle(0)
     pwm.stop()
-    print("  Driver disabled, PWM stopped.")
 
 
-def test_en_polarity(en_pin: int, pwm_pin: int, dir_pin: int, label: str, freq: int):
-    """If the motor still doesn't move, try EN=HIGH (active-HIGH driver)."""
+def test_en_polarity(en_pin: int, pwm_pin: int, dir_pin: int, label: str, freq: float):
+    """Try EN=HIGH (active-HIGH drivers like DRV8833 nSLEEP, L298N ENA)."""
     print(f"\n{'='*60}")
-    print(f"TEST 4 — ACTIVE-HIGH EN POLARITY CHECK  ({label})")
-    print("  Some drivers (e.g. DRV8833 nSLEEP, L298N ENA) are active-HIGH.")
-    print("  This test drives EN HIGH while PWM runs.\n")
+    print(f"TEST 4 — ACTIVE-HIGH EN CHECK  ({label})")
+    print("  If Test 3 produced no motion, your driver may be active-HIGH.")
+    print("  This test drives EN HIGH with PWM running.\n")
 
     pwm = GPIO.PWM(pwm_pin, freq)
     pwm.start(0)
     GPIO.output(dir_pin, GPIO.LOW)
 
-    print("  Setting EN → HIGH + 50% duty ...")
+    print(f"  EN → HIGH + {freq:.0f} Hz + {FIXED_DUTY}% duty ...")
     GPIO.output(en_pin, GPIO.HIGH)
-    pwm.ChangeDutyCycle(50)
-    pause("Did the motor move? If YES, your driver is active-HIGH — invert EN logic in pi_pwm.py.")
+    pwm.ChangeFrequency(freq)
+    pwm.ChangeDutyCycle(FIXED_DUTY)
+    pause("Motor move? If YES → driver is active-HIGH. Invert EN logic in pi_pwm.py.")
 
     pwm.ChangeDutyCycle(0)
     pwm.stop()
@@ -123,9 +125,9 @@ def test_en_polarity(en_pin: int, pwm_pin: int, dir_pin: int, label: str, freq: 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GPIO pin diagnostic")
+    parser = argparse.ArgumentParser(description="GPIO pin diagnostic (frequency-based)")
     parser.add_argument("--axis", choices=["slide", "pan"], default="slide")
-    parser.add_argument("--freq", type=int, default=1000, help="PWM frequency Hz")
+    parser.add_argument("--freq", type=float, default=500.0, help="Max test frequency Hz")
     args = parser.parse_args()
 
     label   = args.axis
@@ -137,20 +139,21 @@ def main():
     print(f"  EN  = BCM {en_pin}")
     print(f"  PWM = BCM {pwm_pin}")
     print(f"  DIR = BCM {dir_pin}")
-    print(f"  Frequency = {args.freq} Hz\n")
+    print(f"  Max test freq: {args.freq:.0f} Hz  |  Duty when moving: {FIXED_DUTY}%\n")
 
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
     GPIO.setup([en_pin, pwm_pin, dir_pin], GPIO.OUT)
-    GPIO.output([en_pin], GPIO.HIGH)
-    GPIO.output([dir_pin, pwm_pin], GPIO.LOW)
+    GPIO.output(en_pin, GPIO.HIGH)
+    GPIO.output(dir_pin, GPIO.LOW)
+    GPIO.output(pwm_pin, GPIO.LOW)
 
     try:
         test_enable(en_pin, label)
         test_direction(dir_pin, label)
-        test_pwm_manual(pwm_pin, label, args.freq)
+        test_freq_sweep(en_pin, pwm_pin, dir_pin, label, args.freq)
         test_en_polarity(en_pin, pwm_pin, dir_pin, label, args.freq)
-        print("\nDone. Check notes above for which test first showed motion.")
+        print("\nDone. Note which test first produced motion.")
     except KeyboardInterrupt:
         print("\nAborted.")
     finally:
