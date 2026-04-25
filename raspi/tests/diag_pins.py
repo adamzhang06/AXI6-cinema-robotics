@@ -127,7 +127,7 @@ def test_en_polarity(en_pin: int, pwm_pin: int, dir_pin: int, label: str, freq: 
 def main():
     parser = argparse.ArgumentParser(description="GPIO pin diagnostic (frequency-based)")
     parser.add_argument("--axis", choices=["slide", "pan"], default="slide")
-    parser.add_argument("--freq", type=float, default=500.0, help="Max test frequency Hz")
+    parser.add_argument("--freq", type=float, default=8000.0, help="Max test frequency Hz")
     args = parser.parse_args()
 
     label   = args.axis

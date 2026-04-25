@@ -80,7 +80,7 @@ PAN_FREQ_PER_DPS   = 22.22    # Hz per deg/sec   (= PAN_STEPS_PER_REV / 360 for 
 MIN_FREQ_HZ        = 1.0      # floor — avoids 0 Hz which is invalid for GPIO.PWM
 
 # Tracking: pan_speed ∈ [-1, 1] → frequency in [0, TRACK_PAN_MAX_FREQ]
-TRACK_PAN_MAX_FREQ = 2000.0   # Hz at pan_speed = 1.0 — tune for tracking speed
+TRACK_PAN_MAX_FREQ = 8000.0   # Hz at pan_speed = 1.0 — tune for tracking speed
 
 # ── Speed deadbands ───────────────────────────────────────────────────────────
 SLIDE_SPEED_DEADBAND = 0.0005  # ips — below this the slide stops completely

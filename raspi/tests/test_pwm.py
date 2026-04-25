@@ -10,7 +10,7 @@ Pins match pi_pwm.py exactly — edit here if you rewire.
 
 Usage:
     python raspi/tests/test_pwm.py [--axis slide|pan|both] [--freq 500] [--duration 2]
-    python raspi/tests/test_pwm.py --ramp [--axis slide|pan|both] [--freq 2000]
+    python raspi/tests/test_pwm.py --ramp [--axis slide|pan|both] [--freq 8000]
 
 Defaults: both axes, 500 Hz, 2 s per direction.
 """
@@ -132,8 +132,8 @@ def main():
     parser.add_argument(
         "--freq",
         type=float,
-        default=500.0,
-        help="PWM frequency in Hz (default: 500)",
+        default=8000.0,
+        help="PWM frequency in Hz (default: 8000)",
     )
     parser.add_argument(
         "--duration",
