@@ -43,9 +43,9 @@ from viam.robot.client import RobotClient
 from viam.components.motor import Motor
 
 # ── Viam Cloud ────────────────────────────────────────────────────────────────
-VIAM_API_KEY    = "rrlkbr70e4rmzm1p91eeyum9tzq559qr"
+VIAM_API_KEY = "rrlkbr70e4rmzm1p91eeyum9tzq559qr"
 VIAM_API_KEY_ID = "4d649e48-b9b9-4551-9890-d3bcfe640d4a"
-VIAM_ADDRESS    = "axi6-main.40ro1hz53b.viam.cloud"
+VIAM_ADDRESS = "axi6-main.40ro1hz53b.viam.cloud"
 SLIDE_MOTOR_NAME = "slide_motor"
 
 
@@ -61,59 +61,59 @@ async def connect_viam():
 
 
 # ── Slide Pins (BCM) ──────────────────────────────────────────────────────────
-SLIDE_EN  = 14   # enable (active LOW)
-SLIDE_PWM = 18   # PWM step signal
-SLIDE_DIR = 15   # direction (LOW = forward/positive)
+SLIDE_EN = 14  # enable (active LOW)
+SLIDE_PWM = 18  # PWM step signal
+SLIDE_DIR = 15  # direction (LOW = forward/positive)
 
 # ── Pan Pins (BCM) ────────────────────────────────────────────────────────────
-PAN_EN  = 8    # enable (active LOW)
-PAN_PWM = 12   # PWM step signal
-PAN_DIR = 7    # direction (HIGH = forward/positive)
+PAN_EN = 8  # enable (active LOW)
+PAN_PWM = 12  # PWM step signal
+PAN_DIR = 7  # direction (HIGH = forward/positive)
 
 # ── PWM fixed duty ────────────────────────────────────────────────────────────
-FIXED_DUTY   = 50.0   # % — held constant; frequency encodes speed
-INIT_FREQ_HZ = 1.0    # startup frequency (any valid value; duty starts at 0%)
+FIXED_DUTY = 50.0  # % — held constant; frequency encodes speed
+INIT_FREQ_HZ = 1.0  # startup frequency (any valid value; duty starts at 0%)
 
 # ── Calibration ───────────────────────────────────────────────────────────────
-SLIDE_FREQ_PER_IPS = 2540.0   # Hz per inch/sec — doubled from SLIDE_STEPS_PER_INCH
-                              # because slider travelled ~half expected distance at 1270;
-                              # tune by comparing programmed vs actual distance:
-                              #   too short → increase, too long → decrease
-PAN_FREQ_PER_DPS   = 44.44    # Hz per deg/sec  — doubled proportionally (was 22.22)
-MIN_FREQ_HZ        = 1.0      # floor — avoids 0 Hz which is invalid for GPIO.PWM
+SLIDE_FREQ_PER_IPS = 2450  # Hz per inch/sec — doubled from SLIDE_STEPS_PER_INCH
+# because slider travelled ~half expected distance at 1270;
+# tune by comparing programmed vs actual distance:
+#   too short → increase, too long → decrease
+PAN_FREQ_PER_DPS = 44.44  # Hz per deg/sec  — doubled proportionally (was 22.22)
+MIN_FREQ_HZ = 1.0  # floor — avoids 0 Hz which is invalid for GPIO.PWM
 
 # Tracking: pan_speed ∈ [-1, 1] → frequency in [0, TRACK_PAN_MAX_FREQ]
 TRACK_PAN_MAX_FREQ = 16000.0  # Hz at pan_speed = 1.0 — tune for tracking speed
 
 # ── Speed deadbands ───────────────────────────────────────────────────────────
 SLIDE_SPEED_DEADBAND = 0.0005  # ips — below this the slide stops completely
-PAN_SPEED_DEADBAND   = 0.05    # dps — below this the pan stops completely
+PAN_SPEED_DEADBAND = 0.05  # dps — below this the pan stops completely
 
 # ── Parasitic compensation ────────────────────────────────────────────────────
-SLIDE_STEPS_PER_INCH     = 1270
-PAN_STEPS_PER_REV        = 8000
+SLIDE_STEPS_PER_INCH = 1270
+PAN_STEPS_PER_REV = 8000
 PAN_STEPS_PER_SLIDE_STEP = 0.4
 
 # Pan degrees that shift per inch of slide travel due to mechanical coupling.
 PARASITIC_DEG_PER_IN = (
     SLIDE_STEPS_PER_INCH * PAN_STEPS_PER_SLIDE_STEP / PAN_STEPS_PER_REV
-) * 360.0   # ≈ 22.86 deg/in
+) * 360.0  # ≈ 22.86 deg/in
 
 # ── Trajectory interpolation ──────────────────────────────────────────────────
-SUB_STEP_S = 0.002   # 2 ms between frequency updates inside execute_move
+SUB_STEP_S = 0.002  # 2 ms between frequency updates inside execute_move
 
 # ── Tracking config ───────────────────────────────────────────────────────────
-TRACK_UPDATE_INTERVAL = 0.01   # s between frequency writes in tracking_loop
-TRACK_TIMEOUT         = 0.5    # s — zero pan if no "track" command in this window
-TRACK_DEADBAND        = 0.01   # pan_speed below this → stop pan
+TRACK_UPDATE_INTERVAL = 0.01  # s between frequency writes in tracking_loop
+TRACK_TIMEOUT = 0.5  # s — zero pan if no "track" command in this window
+TRACK_DEADBAND = 0.01  # pan_speed below this → stop pan
 
-JOG_POWER    = 1.0
+JOG_POWER = 1.0
 JOG_STEP_DELAY = 200
 
 
 # ── GPIO + PWM Objects ────────────────────────────────────────────────────────
 slide_pwm: GPIO.PWM | None = None
-pan_pwm:   GPIO.PWM | None = None
+pan_pwm: GPIO.PWM | None = None
 
 
 def setup():
@@ -125,15 +125,15 @@ def setup():
         GPIO.OUT,
     )
 
-    GPIO.output(SLIDE_EN,  GPIO.HIGH)   # start disabled — motors free
-    GPIO.output(PAN_EN,    GPIO.HIGH)
+    GPIO.output(SLIDE_EN, GPIO.HIGH)  # start disabled — motors free
+    GPIO.output(PAN_EN, GPIO.HIGH)
     GPIO.output(SLIDE_DIR, GPIO.LOW)
-    GPIO.output(PAN_DIR,   GPIO.LOW)
+    GPIO.output(PAN_DIR, GPIO.LOW)
 
     global slide_pwm, pan_pwm
     slide_pwm = GPIO.PWM(SLIDE_PWM, INIT_FREQ_HZ)
-    pan_pwm   = GPIO.PWM(PAN_PWM,   INIT_FREQ_HZ)
-    slide_pwm.start(0)   # duty=0 → no output until we command motion
+    pan_pwm = GPIO.PWM(PAN_PWM, INIT_FREQ_HZ)
+    slide_pwm.start(0)  # duty=0 → no output until we command motion
     pan_pwm.start(0)
 
 
@@ -145,7 +145,7 @@ def teardown():
         pan_pwm.ChangeDutyCycle(0)
         pan_pwm.stop()
     GPIO.output(SLIDE_EN, GPIO.HIGH)
-    GPIO.output(PAN_EN,   GPIO.HIGH)
+    GPIO.output(PAN_EN, GPIO.HIGH)
     GPIO.cleanup()
 
 
@@ -213,12 +213,12 @@ def compile_trajectory(json_data: dict) -> list[dict]:
     Parasitic compensation: slide motion physically rotates the pan axis by
     PARASITIC_DEG_PER_IN deg/in — subtracted from the commanded pan velocity.
     """
-    fps       = json_data["fps"]
+    fps = json_data["fps"]
     frame_dur = 1.0 / fps
-    tracks    = json_data["tracks"]
-    slide_pos = tracks["slide"]   # absolute inches per frame
-    pan_pos   = tracks["pan"]     # absolute degrees per frame
-    N         = len(slide_pos)
+    tracks = json_data["tracks"]
+    slide_pos = tracks["slide"]  # absolute inches per frame
+    pan_pos = tracks["pan"]  # absolute degrees per frame
+    N = len(slide_pos)
 
     waypoints = []
 
@@ -274,8 +274,8 @@ def execute_move(waypoints: list[dict], locks: dict):
 
         wp0 = waypoints[i]
         wp1 = waypoints[i + 1]
-        t0  = wp0["t"]
-        t1  = wp1["t"]
+        t0 = wp0["t"]
+        t1 = wp1["t"]
         dur = t1 - t0
 
         t_sub = t0
@@ -292,9 +292,9 @@ def execute_move(waypoints: list[dict], locks: dict):
                 break
 
             # Linearly interpolate physical velocity between the two waypoints
-            alpha     = (t_sub - t0) / dur if dur > 0 else 0.0
+            alpha = (t_sub - t0) / dur if dur > 0 else 0.0
             slide_ips = wp0["slide_ips"] + alpha * (wp1["slide_ips"] - wp0["slide_ips"])
-            pan_dps   = wp0["pan_dps"]   + alpha * (wp1["pan_dps"]   - wp0["pan_dps"])
+            pan_dps = wp0["pan_dps"] + alpha * (wp1["pan_dps"] - wp0["pan_dps"])
 
             if locks.get("slide"):
                 _set_slide(slide_ips)
@@ -307,16 +307,16 @@ def execute_move(waypoints: list[dict], locks: dict):
     slide_pwm.ChangeDutyCycle(0)
     pan_pwm.ChangeDutyCycle(0)
     GPIO.output(SLIDE_EN, GPIO.HIGH)
-    GPIO.output(PAN_EN,   GPIO.HIGH)
+    GPIO.output(PAN_EN, GPIO.HIGH)
     estop = False
 
 
 # ── Global State ──────────────────────────────────────────────────────────────
 trajectory_waypoints = []
-motor_locks          = {"slide": False, "pan": False, "tilt": False}
-current_pan_speed    = 0.0   # normalised [-1, 1] from hub
-last_track_time      = 0.0
-estop                = False
+motor_locks = {"slide": False, "pan": False, "tilt": False}
+current_pan_speed = 0.0  # normalised [-1, 1] from hub
+last_track_time = 0.0
+estop = False
 
 
 # ── Async Tracking Loop ───────────────────────────────────────────────────────
@@ -338,7 +338,7 @@ async def tracking_loop():
         speed = current_pan_speed
         if abs(speed) < TRACK_DEADBAND:
             pan_pwm.ChangeDutyCycle(0)
-            GPIO.output(PAN_EN, GPIO.HIGH)   # free motor when idle
+            GPIO.output(PAN_EN, GPIO.HIGH)  # free motor when idle
             await asyncio.sleep(TRACK_UPDATE_INTERVAL)
             continue
 
@@ -378,29 +378,35 @@ async def listen_to_hub(uri: str, machine):
 
                     elif command == "execute_move":
                         if not trajectory_waypoints:
-                            print("WARN: execute_move — no trajectory loaded, ignoring.\n")
+                            print(
+                                "WARN: execute_move — no trajectory loaded, ignoring.\n"
+                            )
                             continue
 
                         orbit = data.get("orbit", False)
 
                         if orbit:
-                            waypoints  = [{**wp, "pan_dps": 0.0} for wp in trajectory_waypoints]
+                            waypoints = [
+                                {**wp, "pan_dps": 0.0} for wp in trajectory_waypoints
+                            ]
                             exec_locks = {"slide": True, "pan": False, "tilt": False}
                         else:
-                            waypoints  = trajectory_waypoints
+                            waypoints = trajectory_waypoints
                             exec_locks = {"slide": True, "pan": True, "tilt": False}
 
                         estop = False
                         motor_locks.update(exec_locks)
-                        print(f"🚀  Executing move  orbit={orbit}  locks={exec_locks}\n")
+                        print(
+                            f"🚀  Executing move  orbit={orbit}  locks={exec_locks}\n"
+                        )
 
                         async def _run_trajectory(
                             _wps=waypoints, _locks=exec_locks, _ws=ws
                         ):
                             await asyncio.to_thread(execute_move, _wps, _locks)
                             motor_locks["slide"] = False
-                            motor_locks["pan"]   = False
-                            motor_locks["tilt"]  = False
+                            motor_locks["pan"] = False
+                            motor_locks["tilt"] = False
                             print("Done.\n")
                             try:
                                 await _ws.send(
@@ -415,7 +421,9 @@ async def listen_to_hub(uri: str, machine):
                     elif command == "start_jog":
                         axis = data.get("axis", "")
                         if motor_locks.get(axis, False):
-                            print(f"WARN: jog ignored — {axis} is locked by trajectory.\n")
+                            print(
+                                f"WARN: jog ignored — {axis} is locked by trajectory.\n"
+                            )
                             continue
                         direction = float(data.get("direction", 0))
                         print(f"🕹  start_jog  axis={axis}  direction={direction:+.0f}")
@@ -448,15 +456,15 @@ async def listen_to_hub(uri: str, machine):
 
                     elif command == "emergency_stop":
                         print("🛑  EMERGENCY STOP")
-                        estop             = True
+                        estop = True
                         current_pan_speed = 0.0
                         motor_locks["slide"] = False
-                        motor_locks["pan"]   = False
-                        motor_locks["tilt"]  = False
+                        motor_locks["pan"] = False
+                        motor_locks["tilt"] = False
                         slide_pwm.ChangeDutyCycle(0)
                         pan_pwm.ChangeDutyCycle(0)
                         GPIO.output(SLIDE_EN, GPIO.HIGH)
-                        GPIO.output(PAN_EN,   GPIO.HIGH)
+                        GPIO.output(PAN_EN, GPIO.HIGH)
                         try:
                             await slide_motor.stop()
                         except Exception:
@@ -467,7 +475,7 @@ async def listen_to_hub(uri: str, machine):
                         if motor_locks["pan"] or estop:
                             continue
                         current_pan_speed = float(data.get("pan_speed", 0.0))
-                        last_track_time   = time.time()
+                        last_track_time = time.time()
 
                     else:
                         print(f"WARN: unknown command: {command!r}\n")
@@ -476,8 +484,8 @@ async def listen_to_hub(uri: str, machine):
             print(f"Connection lost ({exc}) — retrying in 3 s...\n")
             current_pan_speed = 0.0
             motor_locks["slide"] = False
-            motor_locks["pan"]   = False
-            motor_locks["tilt"]  = False
+            motor_locks["pan"] = False
+            motor_locks["tilt"] = False
             await asyncio.sleep(3)
 
 
