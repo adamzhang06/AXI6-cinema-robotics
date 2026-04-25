@@ -14,22 +14,35 @@ Modes:
   Orbit       — slide runs a trajectory while pan tracks freely.
   Jog         — slide motor via Viam cloud SDK (set_power / stop).
 
-── Calibration (measure these before running trajectories) ──────────────────
-SLIDE_MAX_SPEED_IPS : slide inches/sec at MAX_DUTY% PWM, no load.
-PAN_MAX_SPEED_DPS   : pan  degrees/sec at MAX_DUTY% PWM, no load.
+── Calibration guide ────────────────────────────────────────────────────────
 
-Procedure: run the ramp test in raspi/tests/test_pwm.py at MAX_DUTY for a
-known distance/angle and time it.  Then:
-  SLIDE_MAX_SPEED_IPS = distance_inches / duration_seconds
-  PAN_MAX_SPEED_DPS   = angle_degrees  / duration_seconds
+STEP 1 — find MIN_DUTY (stiction threshold):
+  Run: python raspi/tests/test_pwm.py --ramp --duty 60 --axis slide
+  Watch for the duty % at which the motor FIRST starts to move.
+  Set SLIDE_MIN_DUTY to that value (typically 15–35%).
 
-If duty exceeds 100% for a requested velocity the value is clamped — the
-motor just runs at full speed.  Under-estimation causes over-speed; over-
-estimation causes under-speed.
+STEP 2 — find SLIDE_DUTY_PER_IPS:
+  Run the slide at MAX_DUTY for exactly 2 seconds:
+    python raspi/tests/test_pwm.py --axis slide --duty 100 --duration 2
+  Measure the distance traveled (inches).
+  Set SLIDE_DUTY_PER_IPS = 100.0 / (distance / 2.0)
+  Example: motor travels 20 in in 2 s → max speed = 10 ips
+           SLIDE_DUTY_PER_IPS = 100 / 10 = 10.0
+
+STEP 3 — sanity check with a trajectory:
+  Program a move of known distance at a moderate speed.
+  If motor arrives early  → increase SLIDE_DUTY_PER_IPS
+  If motor arrives late   → decrease SLIDE_DUTY_PER_IPS
+
+The math:  duty(%) = velocity(in/s) × SLIDE_DUTY_PER_IPS
+  At calibrated max speed the result is exactly MAX_DUTY.
+  Faster requests are clamped to MAX_DUTY.
+  Slower requests get proportionally less duty (but at least MIN_DUTY).
 """
 
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -72,17 +85,36 @@ PAN_DIR = 7    # direction (HIGH = forward/positive)
 PWM_FREQUENCY = 1000   # Hz — tune for your driver
 MAX_DUTY      = 100.0  # % — lower if driver needs headroom
 
-# ── Motor calibration (TODO: measure empirically) ────────────────────────────
-SLIDE_MAX_SPEED_IPS = 5.0    # slide inches/sec at MAX_DUTY — MEASURE AND SET THIS
-PAN_MAX_SPEED_DPS   = 90.0   # pan  degrees/sec at MAX_DUTY — MEASURE AND SET THIS
+# ── Motor calibration ────────────────────────────────────────────────────────
+# These are the ONLY two numbers you need to measure (see guide in docstring).
+#
+# SLIDE_DUTY_PER_IPS  = MAX_DUTY / (max_speed_inches_per_sec)
+#   e.g. motor does 10 in/s at 100%  →  100/10 = 10.0
+#        motor does 40 in/s at 100%  →  100/40 = 2.5
+#
+# PAN_DUTY_PER_DPS  = MAX_DUTY / (max_speed_degrees_per_sec)
+#
+# Tuning shortcut: run a known trajectory and watch the result.
+#   motor arrives TOO EARLY (moves faster than commanded) → DECREASE the constant
+#   motor arrives TOO LATE  (moves slower than commanded) → INCREASE the constant
+SLIDE_DUTY_PER_IPS = 10.0   # TODO: set to MAX_DUTY / measured_max_speed_ips
+PAN_DUTY_PER_DPS   = 1.0    # TODO: set to MAX_DUTY / measured_max_speed_dps
+
+# ── Stiction / minimum duty ───────────────────────────────────────────────────
+# DC motors don't respond below a minimum duty due to static friction.
+# Any non-zero commanded duty below MIN_DUTY is floored to MIN_DUTY so the
+# motor actually starts.  Measure via the ramp test (see calibration guide).
+SLIDE_MIN_DUTY = 20.0   # TODO: find empirically — typical range 15–35%
+PAN_MIN_DUTY   = 20.0
+DUTY_DEADBAND  = 0.5    # duties below this are treated as zero (motor stopped)
 
 # ── Parasitic compensation (same physical constants as pi_follower.py) ────────
 SLIDE_STEPS_PER_INCH     = 1270
 PAN_STEPS_PER_REV        = 8000
 PAN_STEPS_PER_SLIDE_STEP = 0.4
 
-# Derived: how many pan degrees shift per inch of slide travel (parasitic)
-# = (slide_steps/in * pan_steps/slide_step / pan_steps/rev) * 360 deg/rev
+# Derived: pan degrees that shift per inch of slide travel due to coupling.
+# = (slide_steps/in × pan_steps/slide_step / pan_steps/rev) × 360 deg/rev
 PARASITIC_DEG_PER_IN = (
     SLIDE_STEPS_PER_INCH * PAN_STEPS_PER_SLIDE_STEP / PAN_STEPS_PER_REV
 ) * 360.0   # ≈ 22.86 deg/in
@@ -137,28 +169,44 @@ def teardown():
 
 
 # ── Motor helpers ─────────────────────────────────────────────────────────────
+def _apply_stiction(magnitude: float, min_duty: float) -> float:
+    """
+    Given a raw duty magnitude (already ≥ 0), apply the stiction floor:
+      - below DUTY_DEADBAND  → 0   (motor fully stopped)
+      - between deadband and min_duty → min_duty  (floor to overcome friction)
+      - above min_duty       → clamped to MAX_DUTY
+    """
+    if magnitude < DUTY_DEADBAND:
+        return 0.0
+    return min(max(magnitude, min_duty), MAX_DUTY)
+
+
 def _set_slide(duty: float):
     """
     duty in [-MAX_DUTY, MAX_DUTY].
     Positive = forward (SLIDE_DIR LOW).  Negative = reverse (SLIDE_DIR HIGH).
     Direction pin is set before duty so the H-bridge never sees wrong-direction power.
+    Applies stiction floor: any non-zero request gets at least SLIDE_MIN_DUTY.
     """
+    magnitude = _apply_stiction(abs(duty), SLIDE_MIN_DUTY)
     GPIO.output(SLIDE_DIR, GPIO.LOW if duty >= 0 else GPIO.HIGH)
-    slide_pwm.ChangeDutyCycle(min(abs(duty), MAX_DUTY))
+    slide_pwm.ChangeDutyCycle(magnitude)
 
 
 def _set_pan(duty: float):
     """
     duty in [-MAX_DUTY, MAX_DUTY].
     Positive = forward (PAN_DIR HIGH).  Negative = reverse (PAN_DIR LOW).
+    Applies stiction floor: any non-zero request gets at least PAN_MIN_DUTY.
     """
+    magnitude = _apply_stiction(abs(duty), PAN_MIN_DUTY)
     GPIO.output(PAN_DIR, GPIO.HIGH if duty >= 0 else GPIO.LOW)
-    pan_pwm.ChangeDutyCycle(min(abs(duty), MAX_DUTY))
+    pan_pwm.ChangeDutyCycle(magnitude)
 
 
-def _speed_to_slide_duty(speed: float) -> float:
-    """Normalised speed [-1, 1] → duty [-MAX_DUTY, MAX_DUTY]."""
-    return max(-MAX_DUTY, min(MAX_DUTY, speed * MAX_DUTY))
+def _speed_to_pan_duty(speed: float) -> float:
+    """Normalised tracking speed [-1, 1] → signed duty [-MAX_DUTY, MAX_DUTY]."""
+    return math.copysign(min(abs(speed) * MAX_DUTY, MAX_DUTY), speed)
 
 
 # ── Trajectory Compiler ───────────────────────────────────────────────────────
@@ -214,13 +262,11 @@ def compile_trajectory(json_data: dict) -> list[dict]:
         pan_v_dps = pan_v_dps_raw - slide_v_ips * PARASITIC_DEG_PER_IN
 
         # ── Convert physical velocities → duty % via calibration ──────────
-        slide_duty = max(
-            -MAX_DUTY,
-            min(MAX_DUTY, (slide_v_ips / SLIDE_MAX_SPEED_IPS) * MAX_DUTY),
+        slide_duty = math.copysign(
+            min(abs(slide_v_ips) * SLIDE_DUTY_PER_IPS, MAX_DUTY), slide_v_ips
         )
-        pan_duty = max(
-            -MAX_DUTY,
-            min(MAX_DUTY, (pan_v_dps / PAN_MAX_SPEED_DPS) * MAX_DUTY),
+        pan_duty = math.copysign(
+            min(abs(pan_v_dps) * PAN_DUTY_PER_DPS, MAX_DUTY), pan_v_dps
         )
 
         waypoints.append({"t": t, "slide_duty": slide_duty, "pan_duty": pan_duty})
@@ -328,7 +374,7 @@ async def tracking_loop():
             continue
 
         GPIO.output(PAN_EN, GPIO.LOW)
-        _set_pan(_speed_to_slide_duty(speed))   # speed [-1,1] → duty
+        _set_pan(_speed_to_pan_duty(speed))
         await asyncio.sleep(TRACK_UPDATE_INTERVAL)
 
 
