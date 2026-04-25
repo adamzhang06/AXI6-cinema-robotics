@@ -75,7 +75,7 @@ FIXED_DUTY = 50.0  # % — held constant; frequency encodes speed
 INIT_FREQ_HZ = 1.0  # startup frequency (any valid value; duty starts at 0%)
 
 # ── Calibration ───────────────────────────────────────────────────────────────
-SLIDE_FREQ_PER_IPS = 2450  # Hz per inch/sec — doubled from SLIDE_STEPS_PER_INCH
+SLIDE_FREQ_PER_IPS = 2400  # Hz per inch/sec — doubled from SLIDE_STEPS_PER_INCH
 # because slider travelled ~half expected distance at 1270;
 # tune by comparing programmed vs actual distance:
 #   too short → increase, too long → decrease
