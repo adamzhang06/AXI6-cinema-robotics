@@ -75,12 +75,15 @@ FIXED_DUTY   = 50.0   # % — held constant; frequency encodes speed
 INIT_FREQ_HZ = 1.0    # startup frequency (any valid value; duty starts at 0%)
 
 # ── Calibration ───────────────────────────────────────────────────────────────
-SLIDE_FREQ_PER_IPS = 1270.0   # Hz per inch/sec  (= SLIDE_STEPS_PER_INCH for stepper)
-PAN_FREQ_PER_DPS   = 22.22    # Hz per deg/sec   (= PAN_STEPS_PER_REV / 360 for stepper)
+SLIDE_FREQ_PER_IPS = 2540.0   # Hz per inch/sec — doubled from SLIDE_STEPS_PER_INCH
+                              # because slider travelled ~half expected distance at 1270;
+                              # tune by comparing programmed vs actual distance:
+                              #   too short → increase, too long → decrease
+PAN_FREQ_PER_DPS   = 44.44    # Hz per deg/sec  — doubled proportionally (was 22.22)
 MIN_FREQ_HZ        = 1.0      # floor — avoids 0 Hz which is invalid for GPIO.PWM
 
 # Tracking: pan_speed ∈ [-1, 1] → frequency in [0, TRACK_PAN_MAX_FREQ]
-TRACK_PAN_MAX_FREQ = 8000.0   # Hz at pan_speed = 1.0 — tune for tracking speed
+TRACK_PAN_MAX_FREQ = 16000.0  # Hz at pan_speed = 1.0 — tune for tracking speed
 
 # ── Speed deadbands ───────────────────────────────────────────────────────────
 SLIDE_SPEED_DEADBAND = 0.0005  # ips — below this the slide stops completely
