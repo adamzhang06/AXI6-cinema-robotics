@@ -43,7 +43,6 @@ ultra-precise stepping)
 
 ## 💻 Software Stack
 
-*(Note: Add or adjust your specific languages/frameworks here!)*
 * **Frontend:** React / Web App for remote control and waypoint
 timeline mapping.
 * **Backend:** Python-driven hardware control, handling precise timing
